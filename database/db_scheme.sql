@@ -420,7 +420,7 @@ ON CONFLICT (id_ciudad) DO NOTHING;
 -- Cuenta de Usuario Administrador por defecto para la primera defensa (CU01 / CU02)
 -- Nota: La contraseña hash es un hash bcrypt correspondiente al texto 'admin123'
 INSERT INTO usuario (id_usuario, nombre, apellido, correo, password_hash, telefono, estado, id_role) VALUES
-(1, 'Alejandro', 'Sistemas', 'admin@fashionstore.com', '$2b$12$R9h/bIPz9vpt6yQPg7GZde3mU1bT4FzY3VGe34I2rD17gO0O5A2U2', '77712345', 'Activo', 1)
+(1, 'Alejandro', 'Sistemas', 'admin@fashionstore.com', '$2b$12$zZo3V7AI.OyS0Nr3B.46Rev0BJawpm/pc9jSjS4u5anr.uEAleZX6', '77712345', 'Activo', 1)
 ON CONFLICT (id_usuario) DO NOTHING;
 
 -- Sucursales de prueba
