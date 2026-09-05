@@ -1,0 +1,21 @@
+# Entorno virtual local (no debe entrar a la imagen: es de Windows, no de Linux)
+venv/
+.venv/
+
+# Control de versiones
+.git/
+.gitignore
+
+# Credenciales: se inyectan por env_file en docker-compose, nunca dentro de la imagen
+.env
+
+# Artefactos de Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Documentación e infraestructura no necesaria en tiempo de ejecución
+README.md
+Dockerfile
+docker-compose.yml
