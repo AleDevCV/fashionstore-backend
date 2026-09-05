@@ -13,11 +13,17 @@ flujo principal del caso de uso).
 =============================================================================
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.database import get_db
 from app.schemas.auth import RespuestaToken, SolicitudLogin
 from app.services.auth_service import crear_token_acceso, verificar_password
+from app.services.bitacora_service import (
+    ACCION_LOGIN_EXITOSO,
+    ACCION_LOGIN_FALLIDO,
+    obtener_ip_cliente,
+    registrar_bitacora,
+)
 
 router = APIRouter(tags=["Autenticación (CU01)"])
 
@@ -35,7 +41,11 @@ _HASH_SEÑUELO = "$2b$12$zZo3V7AI.OyS0Nr3B.46Rev0BJawpm/pc9jSjS4u5anr.uEAleZX6"
     status_code=status.HTTP_200_OK,
     summary="Iniciar sesión y obtener un token JWT",
 )
-def iniciar_sesion(credenciales: SolicitudLogin, cursor=Depends(get_db)):
+def iniciar_sesion(
+    credenciales: SolicitudLogin,
+    request: Request,
+    cursor=Depends(get_db),
+):
     """Autentica a un usuario y emite su token de acceso.
 
     Lógica de seguridad aplicada, en orden:
@@ -53,8 +63,12 @@ def iniciar_sesion(credenciales: SolicitudLogin, cursor=Depends(get_db)):
       5. Se firma el JWT con los claims que el frontend necesita pintar en la
          interfaz: id_usuario, correo, nombre completo y rol.
 
+      6. Todo intento, exitoso o fallido, queda registrado en la tabla
+         `bitacora` junto con la IP de origen (paso 9 del flujo del CU01).
+
     Parámetros:
         credenciales: cuerpo JSON validado por Pydantic con `correo` y `password`.
+        request: petición HTTP, usada para obtener la IP real del cliente.
         cursor: cursor de PostgreSQL inyectado por la dependencia `get_db`.
 
     Retorna:
@@ -64,6 +78,7 @@ def iniciar_sesion(credenciales: SolicitudLogin, cursor=Depends(get_db)):
         HTTP 401: correo inexistente o contraseña incorrecta.
         HTTP 403: credenciales válidas pero cuenta en estado 'Inactivo'.
     """
+    ip_cliente = obtener_ip_cliente(request)
     # --- 1. Búsqueda del usuario y su rol -----------------------------------
     # LEFT JOIN: un usuario sin rol asignado debe poder autenticarse igualmente,
     # aunque quede sin privilegios en el panel.
@@ -92,6 +107,31 @@ def iniciar_sesion(credenciales: SolicitudLogin, cursor=Depends(get_db)):
     password_valida = verificar_password(credenciales.password, hash_almacenado)
 
     if usuario is None or not password_valida:
+        # AUDITORÍA DEL INTENTO FALLIDO.
+        # Se pasa confirmar=True porque la HTTPException que se lanza justo
+        # debajo hace que `get_db` revierta la transacción de esta petición;
+        # sin el COMMIT inmediato, el rastro del intento fallido se perdería.
+        # El motivo exacto (correo inexistente vs. contraseña incorrecta) sí se
+        # detalla aquí: la bitácora es interna y esa precisión es justo lo que
+        # necesita el auditor para detectar un ataque de fuerza bruta.
+        motivo = (
+            "correo no registrado" if usuario is None else "contraseña incorrecta"
+        )
+        registrar_bitacora(
+            cursor=cursor,
+            accion=ACCION_LOGIN_FALLIDO,
+            tabla_afectada="usuario",
+            # Si el correo existe se guarda su id; si no, queda NULL.
+            id_usuario=usuario["id_usuario"] if usuario else None,
+            registro_id=usuario["id_usuario"] if usuario else None,
+            detalle=(
+                f"Intento de inicio de sesión fallido para el correo: "
+                f"{credenciales.correo} ({motivo})."
+            ),
+            ip_address=ip_cliente,
+            confirmar=True,
+        )
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Credenciales incorrectas",
@@ -103,6 +143,21 @@ def iniciar_sesion(credenciales: SolicitudLogin, cursor=Depends(get_db)):
     # Se comprueba DESPUÉS de validar la contraseña: informar de una cuenta
     # suspendida a quien no conoce la clave sería filtrar información.
     if usuario["estado"] != "Activo":
+        registrar_bitacora(
+            cursor=cursor,
+            accion=ACCION_LOGIN_FALLIDO,
+            tabla_afectada="usuario",
+            id_usuario=usuario["id_usuario"],
+            registro_id=usuario["id_usuario"],
+            detalle=(
+                f"Intento de inicio de sesión rechazado para el correo: "
+                f"{credenciales.correo} (cuenta en estado "
+                f"'{usuario['estado']}')."
+            ),
+            ip_address=ip_cliente,
+            confirmar=True,
+        )
+
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Su cuenta se encuentra suspendida temporalmente",
@@ -125,6 +180,23 @@ def iniciar_sesion(credenciales: SolicitudLogin, cursor=Depends(get_db)):
         "sub": str(usuario["id_usuario"]),
     })
 
+    # --- 6. Auditoría del acceso concedido (paso 9 del CU01) ----------------
+    # Aquí NO se fuerza el commit: la petición termina sin excepción, por lo que
+    # `get_db` consolida la transacción de forma natural al cerrarse.
+    registrar_bitacora(
+        cursor=cursor,
+        accion=ACCION_LOGIN_EXITOSO,
+        tabla_afectada="usuario",
+        id_usuario=usuario["id_usuario"],
+        registro_id=usuario["id_usuario"],
+        detalle=(
+            f"Inicio de sesión exitoso de '{nombre_completo}' "
+            f"({usuario['correo']}) con rol "
+            f"'{usuario['rol'] or 'Sin rol asignado'}'."
+        ),
+        ip_address=ip_cliente,
+    )
+
     return RespuestaToken(access_token=token, token_type="bearer")
 
 
@@ -141,14 +213,19 @@ def iniciar_sesion(credenciales: SolicitudLogin, cursor=Depends(get_db)):
     status_code=status.HTTP_200_OK,
     include_in_schema=False,
 )
-def iniciar_sesion_sin_barra(credenciales: SolicitudLogin, cursor=Depends(get_db)):
+def iniciar_sesion_sin_barra(
+    credenciales: SolicitudLogin,
+    request: Request,
+    cursor=Depends(get_db),
+):
     """Alias de `iniciar_sesion` para la ruta sin barra final.
 
     Parámetros:
         credenciales: mismo cuerpo JSON que el endpoint principal.
+        request: petición HTTP, usada para obtener la IP del cliente.
         cursor: cursor de PostgreSQL inyectado por `get_db`.
 
     Retorna:
         RespuestaToken: idéntica a la del endpoint /api/login/.
     """
-    return iniciar_sesion(credenciales, cursor)
+    return iniciar_sesion(credenciales, request, cursor)

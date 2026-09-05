@@ -19,9 +19,13 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from dotenv import load_dotenv
+
+from app.database import get_db
 
 load_dotenv()
 
@@ -164,3 +168,168 @@ def decodificar_token_acceso(token: str) -> dict[str, Any] | None:
     except JWTError:
         # Cubre firma inválida, algoritmo no permitido y token expirado.
         return None
+
+
+# =============================================================================
+# DEPENDENCIAS DE SEGURIDAD DE FASTAPI (GUARDIANES DE RUTA)
+# -----------------------------------------------------------------------------
+# A partir de aquí se definen las dependencias que protegen los endpoints del
+# CU02 en adelante. Se declaran en este mismo módulo para que toda la lógica de
+# autenticación y autorización viva en un único lugar.
+#
+# Cadena de protección de un endpoint privado:
+#   Petición -> HTTPBearer (extrae el token de la cabecera)
+#            -> get_current_user (verifica firma, expiración y estado en BD)
+#            -> requiere_rol (comprueba el rol jerárquico)
+#            -> función del endpoint
+# =============================================================================
+
+# auto_error=False: si falta la cabecera Authorization, HTTPBearer devuelve None
+# en lugar de lanzar su propio 403. Así se controla el error manualmente y se
+# responde 401, que es el código semánticamente correcto para "no autenticado"
+# y el que el interceptor de Angular usa para cerrar la sesión y redirigir.
+esquema_bearer = HTTPBearer(auto_error=False, description="Token JWT del login")
+
+
+def get_current_user(
+    credenciales: HTTPAuthorizationCredentials | None = Depends(esquema_bearer),
+    cursor=Depends(get_db),
+) -> dict[str, Any]:
+    """Identifica al usuario dueño del token JWT de la petición.
+
+    Es el guardián de autenticación: cualquier endpoint que lo declare como
+    dependencia queda cerrado a peticiones sin un token válido.
+
+    Validaciones aplicadas, en orden:
+      1. Que la cabecera `Authorization: Bearer <token>` esté presente.
+      2. Que la firma del token sea auténtica y no haya expirado (se delega en
+         `decodificar_token_acceso`, que verifica criptográficamente con la
+         SECRET_KEY del servidor).
+      3. Que el usuario del token SIGA EXISTIENDO en la base de datos. Un token
+         es autocontenido y sobrevive a cambios en la base: sin esta consulta,
+         un usuario eliminado conservaría acceso hasta que su token caducara.
+      4. Que su cuenta siga en estado 'Activo'. Esto permite que inhabilitar a
+         un usuario desde el CU02 le corte el acceso de inmediato, sin esperar
+         las 8 horas de vigencia del token.
+
+    Parámetros:
+        credenciales: token extraído de la cabecera por HTTPBearer.
+        cursor: cursor de PostgreSQL inyectado por `get_db`.
+
+    Retorna:
+        dict: datos frescos del usuario leídos de la base de datos
+              (id_usuario, nombre, apellido, correo, estado, rol).
+
+    Errores:
+        HTTP 401: falta el token, es inválido, expiró o el usuario ya no existe.
+        HTTP 403: el usuario existe pero su cuenta está inactiva.
+    """
+    # --- 1. Presencia del token ---------------------------------------------
+    if credenciales is None or not credenciales.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No autenticado. Debe iniciar sesión.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # --- 2. Validez criptográfica y vigencia --------------------------------
+    claims = decodificar_token_acceso(credenciales.credentials)
+    if claims is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sesión inválida o expirada. Vuelva a iniciar sesión.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    id_usuario = claims.get("id_usuario")
+    if id_usuario is None:
+        # Token firmado por este servidor pero sin el claim esperado: podría
+        # provenir de una versión antigua de la API.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sesión inválida o expirada. Vuelva a iniciar sesión.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # --- 3. El usuario debe seguir existiendo -------------------------------
+    cursor.execute(
+        """
+        SELECT  u.id_usuario,
+                u.nombre,
+                u.apellido,
+                u.correo,
+                u.estado,
+                u.id_role,
+                r.nombre AS rol
+        FROM usuario u
+        LEFT JOIN rol r ON u.id_role = r.id_rol
+        WHERE u.id_usuario = %s;
+        """,
+        (id_usuario,),
+    )
+    usuario = cursor.fetchone()
+
+    if usuario is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sesión inválida o expirada. Vuelva a iniciar sesión.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # --- 4. La cuenta debe seguir activa ------------------------------------
+    if usuario["estado"] != "Activo":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Su cuenta se encuentra suspendida temporalmente",
+        )
+
+    return dict(usuario)
+
+
+def requiere_rol(roles_permitidos: list[str]):
+    """Construye una dependencia que restringe un endpoint a ciertos roles.
+
+    Implementa el control de acceso basado en roles (RBAC) exigido por el RF02.
+    Es una fábrica de dependencias: se invoca al declarar la ruta y devuelve la
+    función que FastAPI ejecutará en cada petición.
+
+    Uso en un router:
+        @router.get("/", dependencies=[Depends(requiere_rol(["Administrador"]))])
+
+    O bien, cuando el endpoint necesita saber quién es el solicitante:
+        def listar(admin = Depends(requiere_rol(["Administrador"]))): ...
+
+    Parámetros:
+        roles_permitidos: nombres de rol autorizados, tal como figuran en la
+                          columna `rol.nombre` (ej: ["Administrador"]).
+
+    Retorna:
+        Callable: dependencia que devuelve los datos del usuario si su rol está
+                  autorizado.
+
+    Errores:
+        HTTP 401: propagado por `get_current_user` si no hay sesión válida.
+        HTTP 403: el usuario está autenticado pero su rol no está en la lista.
+                  Se distingue del 401 a propósito: el interceptor de Angular
+                  solo cierra la sesión ante un 401, y una sesión válida sin
+                  permisos no debe expulsar al usuario del sistema.
+    """
+    def verificador_de_rol(
+        usuario: dict[str, Any] = Depends(get_current_user),
+    ) -> dict[str, Any]:
+        """Comprueba el rol del usuario autenticado contra la lista permitida.
+
+        Parámetros:
+            usuario: datos del usuario resueltos por `get_current_user`.
+
+        Retorna:
+            dict: los mismos datos del usuario, si su rol está autorizado.
+        """
+        if usuario.get("rol") not in roles_permitidos:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tiene permisos para realizar esta acción",
+            )
+        return usuario
+
+    return verificador_de_rol

@@ -22,7 +22,7 @@ from psycopg2 import OperationalError
 from dotenv import load_dotenv
 
 from app.database import close_pool
-from app.routers import auth, test_db
+from app.routers import auth, test_db, usuarios
 
 # Carga las variables definidas en el archivo .env hacia os.environ
 load_dotenv()
@@ -110,12 +110,16 @@ async def error_conexion_bd(request: Request, exc: OperationalError):
 # -----------------------------------------------------------------------------
 # REGISTRO DE ROUTERS
 # Cada módulo funcional del sistema se registra aquí. A medida que avancen los
-# Casos de Uso de la Iteración 1 se irán sumando: usuarios (CU02), clientes
-# (CU05), sucursales (CU06), categorias (CU07), prendas (CU08) y catalogo (CU14).
+# Casos de Uso de la Iteración 1 se irán sumando: clientes (CU05), sucursales
+# (CU06), categorias (CU07), prendas (CU08) y catalogo (CU14).
 # -----------------------------------------------------------------------------
 # CU01 - Inicio y cierre de sesion. Se monta bajo /api, por lo que sus rutas
 # quedan expuestas como /api/login/ y /api/login.
 app.include_router(auth.router, prefix="/api")
+
+# CU02 - Administrar usuarios y asignar roles. El router ya declara su propio
+# prefijo interno "/usuarios", por lo que las rutas quedan en /api/usuarios/.
+app.include_router(usuarios.router, prefix="/api")
 
 app.include_router(test_db.router)
 
