@@ -144,7 +144,8 @@ CREATE TABLE categoria (
     id_categoria SERIAL PRIMARY KEY,
     nombre VARCHAR(100) NOT NULL UNIQUE,
     descripcion VARCHAR(255),
-    id_categoria_padre INT REFERENCES categoria(id_categoria) ON DELETE SET NULL -- Jerarquía recursiva
+    id_categoria_padre INT REFERENCES categoria(id_categoria) ON DELETE SET NULL, -- Jerarquía recursiva
+    estado VARCHAR(20) DEFAULT 'Activo' CHECK (estado IN ('Activo', 'Inactivo')) -- Baja lógica (CU07)
 );
 
 CREATE TABLE talla (
@@ -165,6 +166,7 @@ CREATE TABLE prenda (
     nombre VARCHAR(150) NOT NULL,
     descripcion TEXT,
     marca VARCHAR(100) DEFAULT 'FashionStore',
+    genero VARCHAR(20) DEFAULT 'Unisex' CHECK (genero IN ('Dama', 'Caballero', 'Unisex', 'Nino')), -- Filtro del catálogo (CU08, CU14)
     precio_base DECIMAL(10, 2) NOT NULL CHECK (precio_base >= 0),
     id_categoria INT REFERENCES categoria(id_categoria) ON DELETE RESTRICT,
     id_temporada INT REFERENCES temporada(id_temporada) ON DELETE SET NULL,

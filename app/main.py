@@ -22,7 +22,16 @@ from psycopg2 import OperationalError
 from dotenv import load_dotenv
 
 from app.database import close_pool
-from app.routers import auth, test_db, usuarios
+from app.routers import (
+    auth,
+    catalogo,
+    categorias,
+    clientes,
+    geografia,
+    prendas,
+    test_db,
+    usuarios,
+)
 
 # Carga las variables definidas en el archivo .env hacia os.environ
 load_dotenv()
@@ -120,6 +129,22 @@ app.include_router(auth.router, prefix="/api")
 # CU02 - Administrar usuarios y asignar roles. El router ya declara su propio
 # prefijo interno "/usuarios", por lo que las rutas quedan en /api/usuarios/.
 app.include_router(usuarios.router, prefix="/api")
+
+# CU06 - Ciudades y sucursales. El router declara /ciudades y /sucursales, por
+# lo que quedan expuestas como /api/ciudades y /api/sucursales.
+app.include_router(geografia.router, prefix="/api")
+
+# CU05 - Fichas de clientes -> /api/clientes/
+app.include_router(clientes.router, prefix="/api")
+
+# CU07 - Categorias de prendas -> /api/categorias/
+app.include_router(categorias.router, prefix="/api")
+
+# CU08 - Prendas del catalogo -> /api/prendas/
+app.include_router(prendas.router, prefix="/api")
+
+# CU14 - Catalogo publico -> /api/catalogo/  (SIN token, acceso abierto)
+app.include_router(catalogo.router, prefix="/api")
 
 app.include_router(test_db.router)
 
