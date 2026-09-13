@@ -84,6 +84,11 @@ class PrendaCrear(BaseModel):
     genero: GeneroPrenda = Field(default="Unisex")
     precio_base: Decimal = Field(..., ge=0, examples=[Decimal("349.90")])
     id_categoria: int = Field(..., ge=1)
+    id_temporada: int | None = Field(
+        default=None,
+        ge=1,
+        description="Identificador de la temporada comercial asignada",
+    )
     url_imagen: str | None = Field(default=None, max_length=255)
     variantes: list[VarianteCrear] = Field(default_factory=list)
 
@@ -102,12 +107,17 @@ class PrendaActualizar(BaseModel):
     genero: GeneroPrenda | None = Field(default=None)
     precio_base: Decimal | None = Field(default=None, ge=0)
     id_categoria: int | None = Field(default=None, ge=1)
+    id_temporada: int | None = Field(
+        default=None,
+        ge=1,
+        description="Identificador de la temporada comercial asignada (None para desasociar)",
+    )
     url_imagen: str | None = Field(default=None, max_length=255)
     estado: EstadoPrenda | None = Field(default=None)
 
 
 class PrendaRespuesta(BaseModel):
-    """Prenda con su categoría, su imagen principal y sus variantes."""
+    """Prenda con su categoría, temporada, su imagen principal y sus variantes."""
 
     id_prenda: int
     sku: str
@@ -118,6 +128,9 @@ class PrendaRespuesta(BaseModel):
     precio_base: Decimal
     id_categoria: int | None = None
     categoria: str | None = None
+    id_temporada: int | None = None
+    nombre_temporada: str | None = None
+    temporada: str | None = None
     estado: str
     url_imagen: str | None = None
     stock_total: int = 0

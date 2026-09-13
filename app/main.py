@@ -29,10 +29,13 @@ from app.routers import (
     clientes,
     compras,
     geografia,
+    ia,
+    inventario,
     movimientos,
     prendas,
     proveedores,
     roles,
+    temporadas,
     test_db,
     usuarios,
 )
@@ -161,6 +164,15 @@ app.include_router(movimientos.router, prefix="/api")
 
 # CU13 - Adquisicion y compras transaccionales -> /api/compras/
 app.include_router(compras.router, prefix="/api")
+
+# CU09 - Temporadas y colecciones del catalogo -> /api/temporadas/
+app.include_router(temporadas.router, prefix="/api")
+
+# CU10 - Monitoreo y analitica multisucursal de inventario -> /api/inventario/resumen y /api/inventario/monitoreo
+app.include_router(inventario.router, prefix="/api")
+
+# CU22 & CU23 - Inteligencia Artificial (Recomendador y Analítica de Voz) -> /api/ia/
+app.include_router(ia.router, prefix="/api")
 
 app.include_router(test_db.router)
 
