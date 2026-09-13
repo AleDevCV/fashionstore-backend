@@ -80,3 +80,77 @@ class UsuarioAutenticado(BaseModel):
     correo: EmailStr
     nombre: str
     rol: str
+
+
+# =============================================================================
+# CU04 - RECUPERACIÓN DE CONTRASEÑAS
+# =============================================================================
+
+class SolicitudRecuperarPassword(BaseModel):
+    """Petición para solicitar el enlace de recuperación de contraseña."""
+
+    correo: EmailStr = Field(
+        ...,
+        description="Correo electrónico registrado del usuario.",
+        examples=["admin@fashionstore.com"],
+    )
+
+
+class RespuestaRecuperarPassword(BaseModel):
+    """Respuesta informativa tras solicitar la recuperación."""
+
+    mensaje: str = Field(
+        ...,
+        description="Mensaje indicando el envío del enlace si la cuenta existe.",
+    )
+
+
+class SolicitudVerificarToken(BaseModel):
+    """Petición para comprobar si un token de recuperación sigue vigente."""
+
+    token: str = Field(
+        ...,
+        description="Token de recuperación de un solo uso recibido por correo.",
+    )
+
+
+class RespuestaVerificarToken(BaseModel):
+    """Resultado de la validación del token de recuperación."""
+
+    valido: bool = Field(
+        ...,
+        description="Indica si el token es válido, no expiró y no ha sido utilizado.",
+    )
+    correo: str | None = Field(
+        None,
+        description="Correo enmascarado del usuario (ej: us***@dominio.com).",
+    )
+    mensaje: str | None = Field(
+        None,
+        description="Mensaje descriptivo del estado del token.",
+    )
+
+
+class SolicitudRestablecerPassword(BaseModel):
+    """Petición con la nueva contraseña y el token validado."""
+
+    token: str = Field(
+        ...,
+        description="Token de recuperación de contraseña.",
+    )
+    nueva_password: str = Field(
+        ...,
+        min_length=6,
+        max_length=72,
+        description="Nueva contraseña (entre 6 y 72 caracteres).",
+    )
+
+
+class RespuestaRestablecerPassword(BaseModel):
+    """Confirmación tras actualizar la contraseña exitosamente."""
+
+    mensaje: str = Field(
+        ...,
+        description="Mensaje de confirmación del restablecimiento.",
+    )
+

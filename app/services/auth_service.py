@@ -333,3 +333,56 @@ def requiere_rol(roles_permitidos: list[str]):
         return usuario
 
     return verificador_de_rol
+
+
+def requiere_permiso(codigo_permiso: str):
+    """Construye una dependencia que verifica un permiso granular (RBAC - CU03).
+
+    Si el usuario tiene el rol 'Administrador', se concede acceso inmediato
+    (bypass omnipotente). Para otros roles, consulta la base de datos verificando
+    que el `id_role` del usuario tenga asignado el permiso con el `codigo_permiso`.
+
+    Parámetros:
+        codigo_permiso: código único del permiso (ej. "roles.asignar", "usuarios.ver").
+
+    Retorna:
+        Callable: dependencia de FastAPI que devuelve los datos del usuario autenticado.
+
+    Errores:
+        HTTP 401: no autenticado o sesión vencida (propagado por `get_current_user`).
+        HTTP 403: usuario sin rol asignado o sin el permiso solicitado.
+    """
+    def verificador_permiso(
+        usuario: dict[str, Any] = Depends(get_current_user),
+        cursor=Depends(get_db),
+    ) -> dict[str, Any]:
+        # El rol 'Administrador' posee omnipotencia en FashionStore
+        if usuario.get("rol") == "Administrador":
+            return usuario
+
+        id_rol = usuario.get("id_role")
+        if not id_rol:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="El usuario no tiene un rol asignado",
+            )
+
+        cursor.execute(
+            """
+            SELECT 1 
+            FROM rol_permiso rp
+            JOIN permiso p ON rp.id_permiso = p.id_permiso
+            WHERE rp.id_rol = %s AND p.codigo = %s;
+            """,
+            (id_rol, codigo_permiso),
+        )
+        if cursor.fetchone() is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"No tiene el permiso requerido para esta acción ({codigo_permiso})",
+            )
+
+        return usuario
+
+    return verificador_permiso
+

@@ -59,7 +59,8 @@ CREATE TABLE rol (
 CREATE TABLE permiso (
     id_permiso SERIAL PRIMARY KEY,
     nombre VARCHAR(100) NOT NULL UNIQUE,
-    codigo VARCHAR(100) NOT NULL UNIQUE, -- ej: "user:create", "inventory:view"
+    codigo VARCHAR(100) NOT NULL UNIQUE, -- ej: "usuarios.ver", "roles.asignar"
+    modulo VARCHAR(100),
     descripcion VARCHAR(255)
 );
 
@@ -91,6 +92,10 @@ CREATE TABLE usuario_token (
     usado BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_usuario_token_recuperacion ON usuario_token(token_recuperacion);
+CREATE INDEX IF NOT EXISTS idx_usuario_token_id_usuario ON usuario_token(id_usuario);
+CREATE INDEX IF NOT EXISTS idx_usuario_token_usuario_usado ON usuario_token(id_usuario, usado);
 
 -- =============================================================================
 -- 3. MÓDULO GEOGRÁFICO Y ORGANIZACIONAL (CU06)
@@ -412,6 +417,51 @@ INSERT INTO rol (id_rol, nombre, descripcion) VALUES
 (4, 'Cliente', 'Consulta de catálogo, probador virtual y reserva en línea')
 ON CONFLICT (id_rol) DO NOTHING;
 
+-- Catálogo de permisos base agrupados por módulo (CU03)
+INSERT INTO permiso (id_permiso, nombre, codigo, modulo, descripcion) VALUES
+(1, 'Ver Usuarios', 'usuarios.ver', 'Usuarios', 'Permite listar y consultar detalles de usuarios'),
+(2, 'Crear Usuarios', 'usuarios.crear', 'Usuarios', 'Permite registrar nuevas cuentas de usuario'),
+(3, 'Editar Usuarios', 'usuarios.editar', 'Usuarios', 'Permite actualizar datos y estados de usuarios'),
+(4, 'Inactivar Usuarios', 'usuarios.inactivar', 'Usuarios', 'Permite dar de baja lógica a usuarios'),
+(5, 'Ver Roles y Permisos', 'roles.ver', 'Roles y Permisos', 'Permite consultar roles y la matriz de permisos'),
+(6, 'Asignar Permisos a Roles', 'roles.asignar', 'Roles y Permisos', 'Permite modificar los permisos asociados a cada rol'),
+(7, 'Ver Clientes', 'clientes.ver', 'Clientes', 'Permite listar y consultar fichas de clientes'),
+(8, 'Crear Clientes', 'clientes.crear', 'Clientes', 'Permite registrar nuevos clientes'),
+(9, 'Editar Clientes', 'clientes.editar', 'Clientes', 'Permite actualizar información de clientes'),
+(10, 'Inactivar Clientes', 'clientes.inactivar', 'Clientes', 'Permite dar de baja lógica a clientes'),
+(11, 'Ver Geografía', 'geografia.ver', 'Sucursales', 'Permite consultar ciudades y sucursales'),
+(12, 'Gestionar Ciudades', 'ciudades.gestionar', 'Sucursales', 'Permite crear y modificar ciudades'),
+(13, 'Gestionar Sucursales', 'sucursales.gestionar', 'Sucursales', 'Permite crear y actualizar sucursales'),
+(14, 'Ver Categorías', 'categorias.ver', 'Catálogo', 'Permite consultar categorías del catálogo'),
+(15, 'Gestionar Categorías', 'categorias.gestionar', 'Catálogo', 'Permite crear, actualizar y dar baja a categorías'),
+(16, 'Ver Prendas', 'prendas.ver', 'Catálogo', 'Permite listar prendas del catálogo administrativo'),
+(17, 'Gestionar Prendas', 'prendas.gestionar', 'Catálogo', 'Permite crear, modificar y eliminar prendas y variantes'),
+(18, 'Realizar Ventas POS', 'pos.vender', 'Ventas/POS', 'Permite registrar ventas presenciales en caja física'),
+(19, 'Ver Reportes de Ventas', 'ventas.ver', 'Ventas/POS', 'Permite consultar historial y reportes de ventas'),
+(20, 'Ver Bitácora', 'bitacora.ver', 'Auditoría/Bitácora', 'Permite consultar registros inmutables de auditoría del sistema')
+ON CONFLICT (id_permiso) DO NOTHING;
+
+-- Asignación inicial de permisos a roles (CU03)
+-- Administrador: todos los permisos
+INSERT INTO rol_permiso (id_rol, id_permiso)
+SELECT 1, id_permiso FROM permiso
+ON CONFLICT (id_rol, id_permiso) DO NOTHING;
+
+-- Encargado de Sucursal
+INSERT INTO rol_permiso (id_rol, id_permiso)
+SELECT 2, id_permiso FROM permiso WHERE codigo IN (
+    'usuarios.ver', 'clientes.ver', 'geografia.ver', 'sucursales.gestionar',
+    'categorias.ver', 'prendas.ver', 'prendas.gestionar', 'ventas.ver'
+)
+ON CONFLICT (id_rol, id_permiso) DO NOTHING;
+
+-- Cajero (POS)
+INSERT INTO rol_permiso (id_rol, id_permiso)
+SELECT 3, id_permiso FROM permiso WHERE codigo IN (
+    'clientes.ver', 'clientes.crear', 'prendas.ver', 'pos.vender'
+)
+ON CONFLICT (id_rol, id_permiso) DO NOTHING;
+
 -- Ciudades iniciales de Bolivia
 INSERT INTO ciudad (id_ciudad, nombre) VALUES
 (1, 'Santa Cruz de la Sierra'),
@@ -468,6 +518,7 @@ ON CONFLICT (id_cliente) DO NOTHING;
 
 -- Sincronizar secuencias para evitar colisiones de llaves primarias en futuras inserciones
 SELECT setval('rol_id_rol_seq', COALESCE((SELECT MAX(id_rol) FROM rol), 1));
+SELECT setval('permiso_id_permiso_seq', COALESCE((SELECT MAX(id_permiso) FROM permiso), 1));
 SELECT setval('ciudad_id_ciudad_seq', COALESCE((SELECT MAX(id_ciudad) FROM ciudad), 1));
 SELECT setval('usuario_id_usuario_seq', COALESCE((SELECT MAX(id_usuario) FROM usuario), 1));
 SELECT setval('sucursal_id_sucursal_seq', COALESCE((SELECT MAX(id_sucursal) FROM sucursal), 1));

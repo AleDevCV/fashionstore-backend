@@ -13,17 +13,36 @@ flujo principal del caso de uso).
 =============================================================================
 """
 
+import secrets
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.database import get_db
-from app.schemas.auth import RespuestaToken, SolicitudLogin
-from app.services.auth_service import crear_token_acceso, verificar_password
+from app.schemas.auth import (
+    RespuestaRecuperarPassword,
+    RespuestaRestablecerPassword,
+    RespuestaToken,
+    RespuestaVerificarToken,
+    SolicitudLogin,
+    SolicitudRecuperarPassword,
+    SolicitudRestablecerPassword,
+    SolicitudVerificarToken,
+)
+from app.services.auth_service import (
+    crear_token_acceso,
+    generar_hash_password,
+    verificar_password,
+)
 from app.services.bitacora_service import (
     ACCION_LOGIN_EXITOSO,
     ACCION_LOGIN_FALLIDO,
+    ACCION_RESTABLECER_PASSWORD_EXITOSO,
+    ACCION_SOLICITUD_RECUPERACION,
     obtener_ip_cliente,
     registrar_bitacora,
 )
+from app.services.email_service import enviar_correo_recuperacion
 
 router = APIRouter(tags=["Autenticación (CU01)"])
 
@@ -229,3 +248,319 @@ def iniciar_sesion_sin_barra(
         RespuestaToken: idéntica a la del endpoint /api/login/.
     """
     return iniciar_sesion(credenciales, request, cursor)
+
+
+# =============================================================================
+# CU04 - RECUPERACIÓN DE CONTRASEÑAS
+# =============================================================================
+
+@router.post(
+    "/auth/recuperar-password",
+    response_model=RespuestaRecuperarPassword,
+    status_code=status.HTTP_200_OK,
+    summary="Solicitar recuperación de contraseña por correo",
+    tags=["Recuperación de Contraseña (CU04)"],
+)
+def solicitar_recuperacion_password(
+    solicitud: SolicitudRecuperarPassword,
+    request: Request,
+    cursor=Depends(get_db),
+):
+    """Genera un token temporal de 30 min y despacha correo o log de recuperación.
+
+    Invalida tokens previos pendientes del usuario y registra la solicitud
+    en la tabla `bitacora` (CU25). Devuelve una respuesta uniforme para mitigar
+    la enumeración de usuarios.
+    """
+    ip_cliente = obtener_ip_cliente(request)
+
+    cursor.execute(
+        """
+        SELECT id_usuario, nombre, apellido, correo, estado
+        FROM usuario
+        WHERE correo = %s;
+        """,
+        (solicitud.correo,),
+    )
+    usuario = cursor.fetchone()
+
+    if usuario and usuario["estado"] == "Activo":
+        id_usuario = usuario["id_usuario"]
+
+        # 1. Invalidar tokens no usados previos de este usuario
+        cursor.execute(
+            """
+            UPDATE usuario_token
+            SET usado = TRUE
+            WHERE id_usuario = %s AND usado = FALSE;
+            """,
+            (id_usuario,),
+        )
+
+        # 2. Generar token criptográfico único con caducidad estricta de 30 minutos
+        token = secrets.token_urlsafe(32)
+        expiracion = datetime.now(timezone.utc) + timedelta(minutes=30)
+
+        cursor.execute(
+            """
+            INSERT INTO usuario_token (id_usuario, token_recuperacion, expiracion, usado)
+            VALUES (%s, %s, %s, FALSE)
+            RETURNING id_token;
+            """,
+            (id_usuario, token, expiracion),
+        )
+        fila_token = cursor.fetchone()
+        id_token = fila_token["id_token"] if fila_token else None
+
+        # 3. Registrar auditoría inmutable en bitácora (CU25)
+        registrar_bitacora(
+            cursor=cursor,
+            accion=ACCION_SOLICITUD_RECUPERACION,
+            tabla_afectada="usuario_token",
+            id_usuario=id_usuario,
+            registro_id=id_token,
+            detalle=f"Solicitud de recuperación de contraseña para el correo: {usuario['correo']}.",
+            ip_address=ip_cliente,
+        )
+
+        # 4. Despachar correo electrónico o fallback seguro a logger
+        nombre_completo = f"{usuario['nombre']} {usuario['apellido']}".strip()
+        enviar_correo_recuperacion(usuario["correo"], nombre_completo, token)
+
+    return RespuestaRecuperarPassword(
+        mensaje="Si el correo existe en el sistema, se ha enviado un enlace de recuperación."
+    )
+
+
+@router.post(
+    "/auth/recuperar-password/",
+    response_model=RespuestaRecuperarPassword,
+    status_code=status.HTTP_200_OK,
+    include_in_schema=False,
+)
+def solicitar_recuperacion_password_alias(
+    solicitud: SolicitudRecuperarPassword,
+    request: Request,
+    cursor=Depends(get_db),
+):
+    """Alias con barra final para solicitar_recuperacion_password."""
+    return solicitar_recuperacion_password(solicitud, request, cursor)
+
+
+@router.post(
+    "/auth/verificar-token-recuperacion",
+    response_model=RespuestaVerificarToken,
+    status_code=status.HTTP_200_OK,
+    summary="Verificar validez y vigencia del token de recuperación",
+    tags=["Recuperación de Contraseña (CU04)"],
+)
+def verificar_token_recuperacion(
+    solicitud: SolicitudVerificarToken,
+    cursor=Depends(get_db),
+):
+    """Valida la existencia, no-uso y vigencia temporal (<30 min) del token.
+
+    Retorna 200 OK con el correo enmascarado si el token es válido.
+    Retorna 400 si el token no existe, ya fue usado o ha expirado.
+    """
+    token_str = solicitud.token.strip()
+    if not token_str:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Token no proporcionado",
+        )
+
+    cursor.execute(
+        """
+        SELECT ut.id_token, ut.id_usuario, ut.token_recuperacion, ut.expiracion, ut.usado,
+               u.correo, u.estado
+        FROM usuario_token ut
+        JOIN usuario u ON ut.id_usuario = u.id_usuario
+        WHERE ut.token_recuperacion = %s;
+        """,
+        (token_str,),
+    )
+    registro = cursor.fetchone()
+
+    if not registro:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Token de recuperación no válido o inexistente",
+        )
+
+    if registro["usado"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El token de recuperación ya ha sido utilizado",
+        )
+
+    exp = registro["expiracion"]
+    ahora = datetime.now(timezone.utc)
+    if exp.tzinfo is None:
+        ahora = ahora.replace(tzinfo=None)
+
+    if exp < ahora:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El token de recuperación ha expirado",
+        )
+
+    if registro["estado"] != "Activo":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="La cuenta asociada al token se encuentra inactiva",
+        )
+
+    correo_real = registro["correo"]
+    partes = correo_real.split("@")
+    user_part = partes[0]
+    dom_part = partes[1] if len(partes) > 1 else ""
+    if len(user_part) <= 2:
+        enmascarado = user_part[0] + "***"
+    else:
+        enmascarado = user_part[:2] + "***"
+    correo_ofuscado = f"{enmascarado}@{dom_part}" if dom_part else correo_real
+
+    return RespuestaVerificarToken(
+        valido=True,
+        correo=correo_ofuscado,
+        mensaje="Token válido y vigente",
+    )
+
+
+@router.post(
+    "/auth/verificar-token-recuperacion/",
+    response_model=RespuestaVerificarToken,
+    status_code=status.HTTP_200_OK,
+    include_in_schema=False,
+)
+def verificar_token_recuperacion_alias(
+    solicitud: SolicitudVerificarToken,
+    cursor=Depends(get_db),
+):
+    """Alias con barra final para verificar_token_recuperacion."""
+    return verificar_token_recuperacion(solicitud, cursor)
+
+
+@router.post(
+    "/auth/restablecer-password",
+    response_model=RespuestaRestablecerPassword,
+    status_code=status.HTTP_200_OK,
+    summary="Restablecer contraseña con token de recuperación",
+    tags=["Recuperación de Contraseña (CU04)"],
+)
+def restablecer_password(
+    solicitud: SolicitudRestablecerPassword,
+    request: Request,
+    cursor=Depends(get_db),
+):
+    """Actualiza la contraseña del usuario tras comprobar la validez del token.
+
+    Genera el nuevo hash bcrypt, marca el token utilizado, invalida tokens
+    pendientes y audita inmutablemente la operación en `bitacora` (CU25).
+    """
+    ip_cliente = obtener_ip_cliente(request)
+    token_str = solicitud.token.strip()
+
+    cursor.execute(
+        """
+        SELECT ut.id_token, ut.id_usuario, ut.expiracion, ut.usado, u.correo, u.estado
+        FROM usuario_token ut
+        JOIN usuario u ON ut.id_usuario = u.id_usuario
+        WHERE ut.token_recuperacion = %s;
+        """,
+        (token_str,),
+    )
+    registro = cursor.fetchone()
+
+    if not registro:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Token de recuperación no válido o inexistente",
+        )
+
+    if registro["usado"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El token de recuperación ya ha sido utilizado",
+        )
+
+    exp = registro["expiracion"]
+    ahora = datetime.now(timezone.utc)
+    if exp.tzinfo is None:
+        ahora = ahora.replace(tzinfo=None)
+
+    if exp < ahora:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El token de recuperación ha expirado",
+        )
+
+    if registro["estado"] != "Activo":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="La cuenta asociada al token se encuentra inactiva",
+        )
+
+    id_usuario = registro["id_usuario"]
+    id_token = registro["id_token"]
+
+    # 1. Hashear y actualizar nueva contraseña en usuario
+    nuevo_hash = generar_hash_password(solicitud.nueva_password)
+    cursor.execute(
+        """
+        UPDATE usuario
+        SET password_hash = %s, updated_at = CURRENT_TIMESTAMP
+        WHERE id_usuario = %s;
+        """,
+        (nuevo_hash, id_usuario),
+    )
+
+    # 2. Marcar token como usado e invalidar cualquier otro pendiente del usuario
+    cursor.execute(
+        """
+        UPDATE usuario_token
+        SET usado = TRUE
+        WHERE id_token = %s;
+        """,
+        (id_token,),
+    )
+    cursor.execute(
+        """
+        UPDATE usuario_token
+        SET usado = TRUE
+        WHERE id_usuario = %s AND usado = FALSE;
+        """,
+        (id_usuario,),
+    )
+
+    # 3. Auditoría inmutable en bitácora (CU25)
+    registrar_bitacora(
+        cursor=cursor,
+        accion=ACCION_RESTABLECER_PASSWORD_EXITOSO,
+        tabla_afectada="usuario",
+        id_usuario=id_usuario,
+        registro_id=id_usuario,
+        detalle=f"Restablecimiento exitoso de contraseña para la cuenta '{registro['correo']}' (ID: {id_usuario}).",
+        ip_address=ip_cliente,
+    )
+
+    return RespuestaRestablecerPassword(
+        mensaje="Contraseña restablecida exitosamente."
+    )
+
+
+@router.post(
+    "/auth/restablecer-password/",
+    response_model=RespuestaRestablecerPassword,
+    status_code=status.HTTP_200_OK,
+    include_in_schema=False,
+)
+def restablecer_password_alias(
+    solicitud: SolicitudRestablecerPassword,
+    request: Request,
+    cursor=Depends(get_db),
+):
+    """Alias con barra final para restablecer_password."""
+    return restablecer_password(solicitud, request, cursor)
+
