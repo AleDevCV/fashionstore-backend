@@ -30,6 +30,9 @@ _SELECT_PRENDA = """
             p.precio_base,
             p.id_categoria,
             c.nombre AS categoria,
+            p.id_temporada,
+            t.nombre AS nombre_temporada,
+            t.nombre AS temporada,
             p.estado,
             p.created_at,
             (SELECT i.url_imagen FROM imagen_prenda i
@@ -44,6 +47,7 @@ _SELECT_PRENDA = """
             ), 0) AS stock_total
     FROM prenda p
     LEFT JOIN categoria c ON p.id_categoria = c.id_categoria
+    LEFT JOIN temporada t ON p.id_temporada = t.id_temporada
 """
 
 
@@ -57,6 +61,7 @@ def listar_prendas(
     id_categoria: int | None = None,
     genero: str | None = None,
     estado: str | None = None,
+    id_temporada: int | None = None,
 ) -> list[dict[str, Any]]:
     """Devuelve las prendas del catálogo con sus filtros administrativos.
 
@@ -66,6 +71,7 @@ def listar_prendas(
         id_categoria: acota a una categoría concreta.
         genero: acota al público objetivo.
         estado: 'Activo', 'Inactivo' o 'Borrador'.
+        id_temporada: acota a una temporada comercial concreta.
 
     Retorna:
         list[dict]: prendas SIN sus variantes. El detalle con variantes se
@@ -91,6 +97,10 @@ def listar_prendas(
     if estado:
         condiciones.append("p.estado = %s")
         valores.append(estado)
+
+    if id_temporada:
+        condiciones.append("p.id_temporada = %s")
+        valores.append(id_temporada)
 
     sql = _SELECT_PRENDA
     if condiciones:
@@ -186,6 +196,20 @@ def existe_sku(cursor, sku: str, excluir_id: int | None = None) -> bool:
     return cursor.fetchone() is not None
 
 
+def existe_temporada(cursor, id_temporada: int) -> bool:
+    """Comprueba si una temporada existe en el catálogo maestro.
+
+    Parámetros:
+        cursor: cursor de PostgreSQL.
+        id_temporada: identificador de la temporada a verificar.
+
+    Retorna:
+        bool: True si la temporada existe.
+    """
+    cursor.execute("SELECT 1 FROM temporada WHERE id_temporada = %s;", (id_temporada,))
+    return cursor.fetchone() is not None
+
+
 # -----------------------------------------------------------------------------
 # ESCRITURA
 # -----------------------------------------------------------------------------
@@ -194,7 +218,7 @@ def crear_prenda(cursor, datos: dict[str, Any]) -> int:
     """Da de alta una prenda completa en una única transacción.
 
     Secuencia:
-      1. INSERT en `prenda` con los datos maestros.
+      1. INSERT en `prenda` con los datos maestros (incluyendo id_temporada opcional).
       2. INSERT en `imagen_prenda` si se envió una URL de fotografía.
       3. Por cada variante recibida:
            a. INSERT en `variante_prenda` con un SKU de variante derivado.
@@ -217,8 +241,8 @@ def crear_prenda(cursor, datos: dict[str, Any]) -> int:
     cursor.execute(
         """
         INSERT INTO prenda
-            (sku, nombre, descripcion, marca, genero, precio_base, id_categoria)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+            (sku, nombre, descripcion, marca, genero, precio_base, id_categoria, id_temporada)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id_prenda;
         """,
         (
@@ -229,6 +253,7 @@ def crear_prenda(cursor, datos: dict[str, Any]) -> int:
             datos.get("genero") or "Unisex",
             datos["precio_base"],
             datos["id_categoria"],
+            datos.get("id_temporada"),
         ),
     )
     id_prenda = cursor.fetchone()["id_prenda"]

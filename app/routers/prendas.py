@@ -82,6 +82,7 @@ def listar_prendas(
     id_categoria: int | None = Query(default=None),
     genero: str | None = Query(default=None),
     estado: str | None = Query(default=None),
+    id_temporada: int | None = Query(default=None, description="Filtro opcional por temporada"),
     cursor=Depends(get_db),
     usuario=Depends(get_current_user),
 ):
@@ -93,14 +94,14 @@ def listar_prendas(
 
     Parámetros:
         busqueda: texto libre sobre SKU o nombre.
-        id_categoria, genero, estado: filtros exactos.
+        id_categoria, genero, estado, id_temporada: filtros exactos.
         cursor: cursor de PostgreSQL.
         usuario: sesión activa.
 
     Retorna:
         list[PrendaRespuesta]: prendas ordenadas de la más reciente a la más antigua.
     """
-    return svc.listar_prendas(cursor, busqueda, id_categoria, genero, estado)
+    return svc.listar_prendas(cursor, busqueda, id_categoria, genero, estado, id_temporada)
 
 
 @router.get(
@@ -195,7 +196,14 @@ def crear_prenda(
             detail="La categoría indicada no existe en el sistema",
         )
 
-    # --- 3. Sin variantes repetidas -----------------------------------------
+    # --- 3. Temporada existente (si se envía) -------------------------------
+    if datos.id_temporada is not None and not svc.existe_temporada(cursor, datos.id_temporada):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="La temporada indicada no existe en el sistema",
+        )
+
+    # --- 4. Sin variantes repetidas -----------------------------------------
     combinaciones = [(v.id_talla, v.id_color) for v in datos.variantes]
     if len(combinaciones) != len(set(combinaciones)):
         raise HTTPException(
@@ -295,6 +303,16 @@ def actualizar_prenda(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="La categoría indicada no existe en el sistema",
+        )
+
+    if (
+        "id_temporada" in cambios
+        and cambios["id_temporada"] is not None
+        and not svc.existe_temporada(cursor, cambios["id_temporada"])
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="La temporada indicada no existe en el sistema",
         )
 
     # El resumen se arma ANTES de llamar al servicio, porque este extrae

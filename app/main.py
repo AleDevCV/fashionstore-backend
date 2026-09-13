@@ -27,8 +27,15 @@ from app.routers import (
     catalogo,
     categorias,
     clientes,
+    compras,
     geografia,
+    ia,
+    inventario,
+    movimientos,
     prendas,
+    proveedores,
+    roles,
+    temporadas,
     test_db,
     usuarios,
 )
@@ -130,6 +137,9 @@ app.include_router(auth.router, prefix="/api")
 # prefijo interno "/usuarios", por lo que las rutas quedan en /api/usuarios/.
 app.include_router(usuarios.router, prefix="/api")
 
+# CU03 - Roles y Permisos (RBAC) -> /api/permisos, /api/roles/...
+app.include_router(roles.router, prefix="/api")
+
 # CU06 - Ciudades y sucursales. El router declara /ciudades y /sucursales, por
 # lo que quedan expuestas como /api/ciudades y /api/sucursales.
 app.include_router(geografia.router, prefix="/api")
@@ -145,6 +155,24 @@ app.include_router(prendas.router, prefix="/api")
 
 # CU14 - Catalogo publico -> /api/catalogo/  (SIN token, acceso abierto)
 app.include_router(catalogo.router, prefix="/api")
+
+# CU12 - Directorio y administracion de proveedores -> /api/proveedores/
+app.include_router(proveedores.router, prefix="/api")
+
+# CU11 - Movimientos de inventario -> /api/movimientos-inventario/ y /api/inventario/movimientos/
+app.include_router(movimientos.router, prefix="/api")
+
+# CU13 - Adquisicion y compras transaccionales -> /api/compras/
+app.include_router(compras.router, prefix="/api")
+
+# CU09 - Temporadas y colecciones del catalogo -> /api/temporadas/
+app.include_router(temporadas.router, prefix="/api")
+
+# CU10 - Monitoreo y analitica multisucursal de inventario -> /api/inventario/resumen y /api/inventario/monitoreo
+app.include_router(inventario.router, prefix="/api")
+
+# CU22 & CU23 - Inteligencia Artificial (Recomendador y Analítica de Voz) -> /api/ia/
+app.include_router(ia.router, prefix="/api")
 
 app.include_router(test_db.router)
 
