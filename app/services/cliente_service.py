@@ -199,3 +199,90 @@ def inhabilitar_cliente(cursor, id_cliente: int) -> None:
         """,
         (id_cliente,),
     )
+
+
+def existe_correo_usuario(cursor, correo: str) -> bool:
+    """Comprueba si un correo ya está registrado en la tabla usuario."""
+    cursor.execute("SELECT 1 FROM usuario WHERE LOWER(correo) = LOWER(%s);", (correo,))
+    return cursor.fetchone() is not None
+
+
+def auto_registrar_cliente(cursor, datos: dict[str, Any], ip_cliente: str | None = None) -> dict[str, Any]:
+    """Crea la cuenta de usuario (rol Cliente) y la ficha de cliente en una sola transacción atómica."""
+    from app.services.auth_service import crear_token_acceso, generar_hash_password
+    from app.services.bitacora_service import ACCION_INSERT, registrar_bitacora
+
+    ci = str(datos["ci"]).strip()
+    correo = str(datos["correo"]).strip().lower()
+    nombre = str(datos["nombre"]).strip()
+    apellido = str(datos["apellido"]).strip()
+    nombre_completo = f"{nombre} {apellido}".strip()
+    telefono = datos.get("telefono")
+    if telefono:
+        telefono = str(telefono).strip()
+    direccion_envio = datos.get("direccion_envio")
+    if direccion_envio:
+        direccion_envio = str(direccion_envio).strip()
+    password = str(datos["password"])
+
+    # 1. Obtener id_rol de 'Cliente'
+    cursor.execute("SELECT id_rol FROM rol WHERE LOWER(nombre) = 'cliente';")
+    fila_rol = cursor.fetchone()
+    id_rol_cliente = fila_rol["id_rol"] if fila_rol else 4
+
+    # 2. Hashear password
+    password_hash = generar_hash_password(password)
+
+    # 3. Insertar usuario
+    cursor.execute(
+        """
+        INSERT INTO usuario (nombre, apellido, correo, password_hash, telefono, estado, id_role)
+        VALUES (%s, %s, %s, %s, %s, 'Activo', %s)
+        RETURNING id_usuario;
+        """,
+        (nombre, apellido, correo, password_hash, telefono, id_rol_cliente),
+    )
+    id_usuario = cursor.fetchone()["id_usuario"]
+
+    # 4. Insertar cliente
+    cursor.execute(
+        """
+        INSERT INTO cliente (ci, nombre_completo, telefono, correo, direccion_envio, estado)
+        VALUES (%s, %s, %s, %s, %s, 'Activo')
+        RETURNING id_cliente;
+        """,
+        (ci, nombre_completo, telefono, correo, direccion_envio),
+    )
+    id_cliente = cursor.fetchone()["id_cliente"]
+
+    # 5. Registrar en bitacora (CU25)
+    registrar_bitacora(
+        cursor=cursor,
+        accion=ACCION_INSERT,
+        tabla_afectada="cliente",
+        id_usuario=id_usuario,
+        registro_id=id_cliente,
+        detalle=f"Auto-registro de nuevo cliente: {nombre_completo} ({correo}) con CI {ci}",
+        ip_address=ip_cliente,
+    )
+
+    # 6. Generar token de acceso
+    token = crear_token_acceso({
+        "id_usuario": id_usuario,
+        "correo": correo,
+        "nombre": nombre_completo,
+        "rol": "Cliente",
+        "sub": str(id_usuario),
+    })
+
+    return {
+        "mensaje": "Cliente registrado exitosamente",
+        "id_cliente": id_cliente,
+        "id_usuario": id_usuario,
+        "nombre_completo": nombre_completo,
+        "correo": correo,
+        "rol": "Cliente",
+        "access_token": token,
+        "token_type": "bearer",
+    }
+

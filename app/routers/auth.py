@@ -564,3 +564,66 @@ def restablecer_password_alias(
     """Alias con barra final para restablecer_password."""
     return restablecer_password(solicitud, request, cursor)
 
+
+# =============================================================================
+# AUTO-REGISTRO DE CLIENTES (CU05 / CU01)
+# =============================================================================
+
+from app.schemas.cliente import RegistroClientePeticion, RegistroClienteRespuesta
+from app.services import cliente_service as cli_svc
+
+
+@router.post(
+    "/auth/registro",
+    response_model=RegistroClienteRespuesta,
+    status_code=status.HTTP_201_CREATED,
+    summary="Registrar un nuevo cliente en la plataforma (CU05)",
+    tags=["Clientes (CU05)"],
+)
+@router.post(
+    "/auth/registro/",
+    response_model=RegistroClienteRespuesta,
+    status_code=status.HTTP_201_CREATED,
+    include_in_schema=False,
+)
+@router.post(
+    "/auth/registro-cliente",
+    response_model=RegistroClienteRespuesta,
+    status_code=status.HTTP_201_CREATED,
+    include_in_schema=False,
+)
+def registrar_cliente(
+    solicitud: RegistroClientePeticion,
+    request: Request,
+    cursor=Depends(get_db),
+):
+    """Permite el auto-registro autónomo de clientes desde la web o app móvil (CU05).
+
+    Crea la cuenta en `usuario` (con rol Cliente) y la ficha en `cliente` de forma
+    atómica, audita en bitácora (CU25) y devuelve el token JWT para inicio de sesión
+    inmediato en la plataforma.
+    """
+    # 1. Validar unicidad de CI
+    if cli_svc.existe_ci(cursor, solicitud.ci):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="La cédula de identidad ingresada ya se encuentra registrada.",
+        )
+
+    # 2. Validar unicidad de correo
+    if cli_svc.existe_correo_usuario(cursor, solicitud.correo):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El correo electrónico ingresado ya se encuentra registrado.",
+        )
+
+    if cli_svc.existe_correo(cursor, solicitud.correo):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El correo electrónico ya está registrado por otro cliente.",
+        )
+
+    ip_cliente = obtener_ip_cliente(request)
+    return cli_svc.auto_registrar_cliente(cursor, solicitud.model_dump(), ip_cliente=ip_cliente)
+
+
