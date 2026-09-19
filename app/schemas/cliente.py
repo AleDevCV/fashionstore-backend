@@ -67,3 +67,33 @@ class ClienteRespuesta(BaseModel):
     direccion_envio: str | None = None
     estado: str
     created_at: datetime | None = None
+
+
+# =============================================================================
+# AUTO-REGISTRO DE CLIENTES (CU05 / CU01)
+# =============================================================================
+
+class RegistroClientePeticion(BaseModel):
+    """Datos enviados por un cliente para auto-registrarse en la plataforma."""
+
+    nombre: str = Field(..., min_length=2, max_length=100, examples=["Claudia"])
+    apellido: str = Field(..., min_length=2, max_length=100, examples=["Torrez"])
+    ci: str = Field(..., min_length=4, max_length=20, examples=["8472911"])
+    correo: EmailStr = Field(..., examples=["claudia.torrez@gmail.com"])
+    password: str = Field(..., min_length=4, max_length=72, examples=["claveSegura123"])
+    telefono: str | None = Field(default=None, max_length=20, examples=["77334455"])
+    direccion_envio: str | None = Field(default=None, max_length=255, examples=["Av. San Martín #123"])
+
+
+class RegistroClienteRespuesta(BaseModel):
+    """Respuesta tras completar exitosamente el registro del cliente."""
+
+    mensaje: str
+    id_cliente: int
+    id_usuario: int
+    nombre_completo: str
+    correo: str
+    rol: str = "Cliente"
+    access_token: str
+    token_type: str = "bearer"
+
