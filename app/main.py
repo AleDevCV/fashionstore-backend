@@ -14,10 +14,12 @@ Ejecución en Docker:  docker compose up -d --build
 
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from psycopg2 import OperationalError
 from dotenv import load_dotenv
 
@@ -28,16 +30,19 @@ from app.routers import (
     categorias,
     clientes,
     compras,
+    comprobantes,
     geografia,
     ia,
     inventario,
     movimientos,
+    pagos,
     prendas,
     proveedores,
     roles,
     temporadas,
     test_db,
     usuarios,
+    ventas,
 )
 
 # Carga las variables definidas en el archivo .env hacia os.environ
@@ -174,7 +179,21 @@ app.include_router(inventario.router, prefix="/api")
 # CU22 & CU23 - Inteligencia Artificial (Recomendador y Analítica de Voz) -> /api/ia/
 app.include_router(ia.router, prefix="/api")
 
+# CU15 - Carrito de Compras, Reservas y Ventas Online -> /api/ventas/
+app.include_router(ventas.router, prefix="/api")
+
+# CU20 - Pasarela de Pagos (Stripe + QR Bolivia) -> /api/pagos/
+app.include_router(pagos.router, prefix="/api")
+
+# CU21 - Comprobantes Fiscales Digitales PDF -> /api/comprobantes/
+app.include_router(comprobantes.router, prefix="/api")
+
 app.include_router(test_db.router)
+
+# Archivos estáticos: comprobantes PDF descargables desde /static/comprobantes/<archivo>.pdf
+_static_dir = Path(__file__).parent / "static" / "comprobantes"
+_static_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/static/comprobantes", StaticFiles(directory=str(_static_dir)), name="comprobantes")
 
 
 @app.get("/", tags=["Estado del Servicio"], summary="Mensaje de bienvenida")
