@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 from app.database import close_pool
 from app.routers import (
     auth,
+    bitacora,
     catalogo,
     categorias,
     clientes,
@@ -196,6 +197,9 @@ app.include_router(pos.router, prefix="/api")
 # CU24 - Dashboard de Indicadores y KPIs Gerenciales -> /api/dashboard/ y /api/kpis/
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(dashboard.kpis_router, prefix="/api")
+
+# CU25 - Auditoría y Bitácora de Operaciones -> /api/bitacora/
+app.include_router(bitacora.router, prefix="/api")
 
 app.include_router(test_db.router)
 
