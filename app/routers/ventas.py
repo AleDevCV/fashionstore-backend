@@ -16,7 +16,10 @@ from fastapi import APIRouter, Depends, Query, Request, status
 from app.database import get_db
 from app.schemas.venta import (
     ReservaPeticion,
+    ReservaProbadorCrear,
+    ReservaProbadorEstadoActualizar,
     ReservaRespuesta,
+    TicketReservaRespuesta,
     ValidarCarritoPeticion,
     ValidarCarritoRespuesta,
     VentaConfirmarPeticion,
@@ -192,3 +195,110 @@ def mis_pedidos(
         skip=skip,
         limit=limit,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RESERVAS DE PROBADOR FÍSICO Y ATENCIÓN EN SUCURSAL (CU16, CU17)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post(
+    "/reservas-probador",
+    response_model=TicketReservaRespuesta,
+    status_code=status.HTTP_201_CREATED,
+    summary="Crear reserva de prendas para probar en sucursal (CU16)",
+)
+@router.post(
+    "/reservas-probador/",
+    response_model=TicketReservaRespuesta,
+    status_code=status.HTTP_201_CREATED,
+    include_in_schema=False,
+)
+def crear_reserva_probador_endpoint(
+    datos: ReservaProbadorCrear,
+    request: Request,
+    cursor=Depends(get_db),
+    usuario=Depends(get_current_user),
+):
+    """Permite al cliente separar prendas para probarse físicamente en una tienda.
+
+    Bloquea temporalmente el stock en la sucursal elegida y genera un ticket con QR.
+    """
+    ip = obtener_ip_cliente(request)
+    id_usuario = usuario.get("id_usuario")
+    return svc.crear_reserva_probador(
+        cursor=cursor,
+        datos=datos,
+        id_usuario=id_usuario,
+        ip_address=ip,
+    )
+
+
+@router.get(
+    "/reservas-probador",
+    response_model=list[dict],
+    summary="Listar reservas de probador por sucursal o estado (CU17)",
+)
+@router.get(
+    "/reservas-probador/",
+    response_model=list[dict],
+    include_in_schema=False,
+)
+def listar_reservas_probador_endpoint(
+    id_sucursal: int | None = Query(default=None, description="Filtrar por sucursal"),
+    estado: str | None = Query(default=None, description="Filtrar por estado (Pendiente, Preparado, etc.)"),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    cursor=Depends(get_db),
+    usuario=Depends(get_current_user),
+):
+    """Panel de tienda: lista las reservas de clientes asignadas a la sucursal."""
+    return svc.listar_reservas_sucursal(
+        cursor=cursor,
+        id_sucursal=id_sucursal,
+        estado=estado,
+        skip=skip,
+        limit=limit,
+    )
+
+
+@router.get(
+    "/reservas-probador/{codigo_o_id}",
+    response_model=TicketReservaRespuesta,
+    summary="Consultar ticket de reserva por código TKT o ID numérico (CU16, CU17)",
+)
+def consultar_ticket_reserva_endpoint(
+    codigo_o_id: str,
+    cursor=Depends(get_db),
+    usuario=Depends(get_current_user),
+):
+    """Retorna los datos completos de la reserva y su código QR para validación en tienda."""
+    return svc.obtener_ticket_reserva_qr(cursor, codigo_o_id)
+
+
+@router.patch(
+    "/reservas-probador/{id_reserva}/estado",
+    response_model=TicketReservaRespuesta,
+    summary="Actualizar estado de atención de reserva en probador (CU17)",
+)
+def actualizar_estado_reserva_endpoint(
+    id_reserva: int,
+    datos: ReservaProbadorEstadoActualizar,
+    request: Request,
+    cursor=Depends(get_db),
+    usuario=Depends(get_current_user),
+):
+    """Permite al personal de sucursal:
+    - Marcar 'Preparado' cuando el cliente ingresa al probador.
+    - Marcar 'Atendido' al concretar la venta en caja.
+    - Marcar 'Cancelado' para devolver las prendas no compradas al inventario disponible.
+    """
+    ip = obtener_ip_cliente(request)
+    id_usuario = usuario.get("id_usuario")
+    return svc.actualizar_estado_reserva_probador(
+        cursor=cursor,
+        id_reserva=id_reserva,
+        datos=datos,
+        id_usuario=id_usuario,
+        ip_address=ip,
+    )
+

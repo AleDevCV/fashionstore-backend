@@ -102,6 +102,48 @@ class ReservaRespuesta(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# RESERVA PARA PROBADOR FÍSICO (CU16, CU17 — Omnicanal)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ReservaProbadorCrear(BaseModel):
+    """Payload para reservar prendas para prueba física en sucursal (CU16)."""
+
+    id_cliente: int = Field(..., gt=0)
+    id_sucursal: int = Field(..., gt=0)
+    items: list[DetalleReservaPeticion] = Field(..., min_length=1)
+    horas_vigencia: int = Field(default=2, ge=1, le=24, description="Horas antes de expirar")
+
+
+EstadoReservaProbador = Literal["Pendiente", "Preparado", "Atendido", "Cancelado"]
+
+
+class ReservaProbadorEstadoActualizar(BaseModel):
+    """Payload para actualizar el estado de atención en sucursal (CU17)."""
+
+    nuevo_estado: EstadoReservaProbador
+    motivo: str | None = Field(default=None, max_length=200)
+
+
+class TicketReservaRespuesta(BaseModel):
+    """Ticket digital omnicanal con código QR para atención en probador."""
+
+    id_reserva: int
+    codigo_ticket: str
+    qr_base64: str
+    id_cliente: int
+    cliente_nombre: str | None = None
+    id_sucursal: int
+    sucursal_nombre: str | None = None
+    fecha_reserva: datetime
+    fecha_limite: datetime
+    estado: str
+    total: Decimal
+    items: list[DetalleReservaRespuesta] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # VENTA (CU15 — se crea al confirmar el pago)
 # ─────────────────────────────────────────────────────────────────────────────
 
