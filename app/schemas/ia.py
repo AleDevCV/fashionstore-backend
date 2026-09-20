@@ -158,3 +158,104 @@ class AnaliticaVozRespuesta(BaseModel):
         default=None,
         description="Contenido del documento PDF codificado en Base64 si se solicitó generar_pdf=True",
     )
+
+
+# =============================================================================
+# VESTIDOR VIRTUAL FOTOREALISTA CON IA (TRY-ON FASE 2)
+# =============================================================================
+
+
+class TryOnPeticion(BaseModel):
+    """Payload de entrada para el vestidor virtual fotorealista."""
+
+    foto_usuario: str = Field(
+        ...,
+        description="Imagen del usuario en Base64 (con o sin encabezado data:image/...;base64,)",
+    )
+    id_prenda: int | None = Field(
+        default=None,
+        description="Identificador de la prenda en catálogo PostgreSQL",
+    )
+    id_variante_prenda: int | None = Field(
+        default=None,
+        description="Identificador opcional de la variante específica de la prenda en catálogo",
+    )
+    url_prenda: str | None = Field(
+        default=None,
+        description="URL directa o Base64 de la prenda con transparencia PNG",
+    )
+    usar_ia_generativa: bool = Field(
+        default=True,
+        description="Habilitar refinamiento y análisis con Gemini Vision",
+    )
+    ajuste_holgura: float | None = Field(
+        default=1.0,
+        ge=0.5,
+        le=2.0,
+        description="Factor de holgura / entalle (1.0 estándar, <1 ajustado, >1 holgado)",
+    )
+
+
+class MetadatosCalce(BaseModel):
+    """Métricas y telemetría de ajuste anatómico y procesamiento."""
+
+    metodo: str = Field(
+        default="opencv_homography_warp",
+        description="Motor utilizado: 'gemini_multimodal_tryon', 'gemini_vision' o 'warping_hsv_local'",
+    )
+    metodo_usado: str = Field(
+        default="opencv_homography_warp",
+        description="Identificador del método ejecutado: 'gemini_multimodal_tryon' u 'opencv_homography_warp'",
+    )
+    anclaje_torso: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Coordenadas y dimensiones detectadas de hombros, cuello y centro",
+    )
+    ajuste_luz: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Métricas de ecualización de luminancia (V) y saturación (S) en HSV",
+    )
+    prenda_id: int | None = Field(
+        default=None,
+        description="ID de la prenda asociada si proviene de catálogo",
+    )
+    es_fallback: bool = Field(
+        default=False,
+        description="Indica si se recurrió al motor local por indisponibilidad de Gemini",
+    )
+    tiempo_procesamiento_ms: float = Field(
+        default=0.0,
+        description="Duración total del procesamiento en milisegundos",
+    )
+
+
+class TryOnRespuesta(BaseModel):
+    """Respuesta estructurada del vestidor virtual fotorealista."""
+
+    estado: str = Field(default="exito", description="Estado de la operación ('exito', 'error')")
+    imagen_resultado: str = Field(
+        ...,
+        description="Fotografía resultante compuesta en formato Data URI Base64 (data:image/jpeg;base64,...)",
+    )
+    imagen_resultado_b64: str | None = Field(
+        default=None,
+        description="Alias en Base64 de la imagen generada",
+    )
+    metodo_usado: str = Field(
+        default="opencv_homography_warp",
+        description="Método efectivamente ejecutado: 'gemini_multimodal_tryon' u 'opencv_homography_warp'",
+    )
+    tiempo_procesamiento_ms: float = Field(
+        description="Tiempo de ejecución total en milisegundos",
+    )
+    metadatos_calce: MetadatosCalce = Field(
+        description="Telemetría de calce anatómico y balance lumínico",
+    )
+    mensaje: str = Field(
+        default="Composición completada exitosamente",
+        description="Detalle o recomendación de calce",
+    )
+    es_generativo: bool = Field(
+        default=False,
+        description="Indica si la imagen fue generada mediante IA generativa (Gemini multimodal)",
+    )
