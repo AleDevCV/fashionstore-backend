@@ -110,3 +110,80 @@ def registrar_bitacora(
     if confirmar:
         # `cursor.connection` es la conexión del pool asociada a este cursor.
         cursor.connection.commit()
+
+
+def listar_bitacora(
+    cursor: Any,
+    pagina: int = 1,
+    limite: int = 50,
+    accion: str | None = None,
+    tabla_afectada: str | None = None,
+    busqueda: str | None = None,
+) -> dict:
+    """Consulta los eventos registrados en la bitácora de auditoría (CU25)
+
+    con soporte de paginación y filtros de búsqueda para el Administrador.
+    """
+    offset = (max(pagina, 1) - 1) * limite
+    filtros = []
+    params: list[Any] = []
+
+    if accion:
+        filtros.append("b.accion = %s")
+        params.append(accion)
+
+    if tabla_afectada:
+        filtros.append("b.tabla_afectada = %s")
+        params.append(tabla_afectada)
+
+    if busqueda:
+        filtros.append(
+            "(b.detalle ILIKE %s OR b.ip_address ILIKE %s OR u.nombre ILIKE %s OR u.correo ILIKE %s)"
+        )
+        termino = f"%{busqueda}%"
+        params.extend([termino, termino, termino, termino])
+
+    where_clause = f"WHERE {' AND '.join(filtros)}" if filtros else ""
+
+    # Conteo total
+    query_count = f"""
+        SELECT COUNT(*) AS total
+        FROM bitacora b
+        LEFT JOIN usuario u ON b.id_usuario = u.id_usuario
+        {where_clause};
+    """
+    cursor.execute(query_count, params)
+    fila_count = cursor.fetchone()
+    total = int(fila_count["total"] or 0)
+
+    # Consulta de registros paginados
+    query_items = f"""
+        SELECT 
+            b.id_bitacora,
+            b.id_usuario,
+            TRIM(CONCAT(u.nombre, ' ', COALESCE(u.apellido, ''))) AS nombre_usuario,
+            u.correo AS correo_usuario,
+            r.nombre AS rol_usuario,
+            b.accion,
+            b.tabla_afectada,
+            b.registro_id,
+            b.detalle,
+            b.ip_address,
+            b.fecha
+        FROM bitacora b
+        LEFT JOIN usuario u ON b.id_usuario = u.id_usuario
+        LEFT JOIN rol r ON u.id_role = r.id_rol
+        {where_clause}
+        ORDER BY b.id_bitacora DESC
+        LIMIT %s OFFSET %s;
+    """
+    params_items = list(params) + [limite, offset]
+    cursor.execute(query_items, params_items)
+    items = cursor.fetchall()
+
+    return {
+        "total": total,
+        "pagina": pagina,
+        "limite": limite,
+        "items": items,
+    }
