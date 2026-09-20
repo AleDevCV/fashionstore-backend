@@ -31,11 +31,13 @@ from app.routers import (
     clientes,
     compras,
     comprobantes,
+    dashboard,
     geografia,
     ia,
     inventario,
     movimientos,
     pagos,
+    pos,
     prendas,
     proveedores,
     roles,
@@ -187,6 +189,13 @@ app.include_router(pagos.router, prefix="/api")
 
 # CU21 - Comprobantes Fiscales Digitales PDF -> /api/comprobantes/
 app.include_router(comprobantes.router, prefix="/api")
+
+# CU19 - Terminal POS de Ventas Presenciales -> /api/pos/
+app.include_router(pos.router, prefix="/api")
+
+# CU24 - Dashboard de Indicadores y KPIs Gerenciales -> /api/dashboard/ y /api/kpis/
+app.include_router(dashboard.router, prefix="/api")
+app.include_router(dashboard.kpis_router, prefix="/api")
 
 app.include_router(test_db.router)
 

@@ -31,7 +31,7 @@ def get_pool():
     """Devuelve el pool, creándolo la primera vez que se necesita."""
     global _connection_pool
     if _connection_pool is None:
-        _connection_pool = pool.SimpleConnectionPool(
+        _connection_pool = pool.ThreadedConnectionPool(
             DB_MIN_CONNECTIONS,
             DB_MAX_CONNECTIONS,
             host=DB_HOST,
