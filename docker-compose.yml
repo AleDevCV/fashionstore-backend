@@ -74,6 +74,15 @@ services:
       DB_HOST: db
       DB_PORT: 5432
 
+      # Motor de IA del Vestidor Virtual (CU23): gemini | fashn | cascade.
+      # Si la variable no existe en el .env se asume "cascade".
+      TRYON_ENGINE: ${TRYON_ENGINE:-cascade}
+
+      # Token de Hugging Face para FASHN VTON v1.5 (HF Spaces / ZeroGPU).
+      # El valor se interpola desde el archivo .env del proyecto (que está en
+      # .gitignore), de modo que el token NUNCA queda escrito en este compose.
+      HF_TOKEN: ${HF_TOKEN:-}
+
     ports:
       # La API queda accesible desde el navegador de Windows en localhost:8000
       - "${API_PORT_HOST:-8000}:8000"
