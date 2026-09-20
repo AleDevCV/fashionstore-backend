@@ -12,6 +12,9 @@ Lógica de negocio para el carrito de compras y checkout digital:
 =============================================================================
 """
 
+import base64
+import io
+import qrcode
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 from datetime import datetime, timedelta
@@ -20,9 +23,12 @@ from fastapi import HTTPException, status
 
 from app.schemas.venta import (
     ReservaPeticion,
+    ReservaProbadorCrear,
+    ReservaProbadorEstadoActualizar,
+    TicketReservaRespuesta,
     VentaConfirmarPeticion,
 )
-from app.services.bitacora_service import ACCION_INSERT, registrar_bitacora
+from app.services.bitacora_service import ACCION_INSERT, ACCION_UPDATE, registrar_bitacora
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -505,5 +511,398 @@ def listar_reservas_cliente(cursor: Any, id_cliente: int) -> list[dict]:
         ORDER BY r.fecha_reserva DESC;
         """,
         (id_cliente,),
+    )
+    return cursor.fetchall()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RESERVAS PARA PROBADOR FÍSICO Y ATENCIÓN EN SUCURSAL (CU16, CU17)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _generar_qr_ticket(id_reserva: int, codigo_ticket: str, sucursal_nombre: str) -> str:
+    """Genera imagen QR codificada en base64 para el ticket de reserva."""
+    contenido = f"FASHIONSTORE|RESERVA|{id_reserva}|{codigo_ticket}|{sucursal_nombre}"
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=8,
+        border=2,
+    )
+    qr.add_data(contenido)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
+def crear_reserva_probador(
+    cursor: Any,
+    datos: ReservaProbadorCrear,
+    id_usuario: int | None,
+    ip_address: str,
+) -> dict:
+    """Crea una reserva de prendas para prueba física en una sucursal (CU16).
+
+    Bloquea temporalmente el stock físico en la sucursal generando un movimiento
+    de salida provisional. Si la reserva se cancela o no se concreta, el stock
+    se devuelve mediante movimiento de entrada.
+    """
+    if not datos.items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="La reserva debe incluir al menos una prenda para probar",
+        )
+
+    # Validar sucursal
+    cursor.execute(
+        "SELECT id_sucursal, nombre FROM sucursal WHERE id_sucursal = %s;",
+        (datos.id_sucursal,),
+    )
+    sucursal = cursor.fetchone()
+    if not sucursal:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="La sucursal física especificada no existe",
+        )
+
+    # Validar cliente
+    cursor.execute(
+        "SELECT id_cliente, nombre_completo FROM cliente WHERE id_cliente = %s AND estado = 'Activo';",
+        (datos.id_cliente,),
+    )
+    cliente = cursor.fetchone()
+    if not cliente:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="El cliente especificado no existe o está inactivo",
+        )
+
+    # Validar stock disponible en la sucursal seleccionada
+    items_list = [
+        {"id_variante_prenda": it.id_variante_prenda, "cantidad": it.cantidad}
+        for it in datos.items
+    ]
+    resultado_stock = validar_stock_carrito(cursor, items_list, datos.id_sucursal)
+    if not resultado_stock["valido"]:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Stock insuficiente en sucursal {sucursal['nombre']} para variantes: {resultado_stock['items_sin_stock']}",
+        )
+
+    # Calcular total estimado
+    total = Decimal("0.00")
+    for it in datos.items:
+        total += Decimal(str(it.precio_unitario)) * it.cantidad
+    total = total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    # Fecha límite según horas de vigencia solicitadas
+    fecha_limite = datetime.now() + timedelta(hours=datos.horas_vigencia)
+
+    # Inserción en cabecera de reserva
+    cursor.execute(
+        """
+        INSERT INTO reserva (id_cliente, id_sucursal, fecha_limite, estado, total)
+        VALUES (%s, %s, %s, 'Pendiente', %s)
+        RETURNING id_reserva, fecha_reserva, fecha_limite, estado, total;
+        """,
+        (datos.id_cliente, datos.id_sucursal, fecha_limite, total),
+    )
+    reserva_row = cursor.fetchone()
+    id_reserva = reserva_row["id_reserva"]
+    codigo_ticket = f"TKT-{id_reserva:06d}"
+
+    # Inserción de ítems y reserva de stock físico (descuento temporal)
+    for it in datos.items:
+        cursor.execute(
+            """
+            INSERT INTO detalle_reserva (id_reserva, id_variante_prenda, cantidad, precio_unitario)
+            VALUES (%s, %s, %s, %s);
+            """,
+            (id_reserva, it.id_variante_prenda, it.cantidad, it.precio_unitario),
+        )
+
+        # Descontar stock físico temporalmente en la tienda
+        cursor.execute(
+            """
+            INSERT INTO movimiento_inventario
+                (id_sucursal, id_variante_prenda, tipo, cantidad, motivo, id_usuario)
+            VALUES (%s, %s, 'Salida', %s, %s, %s);
+            """,
+            (
+                datos.id_sucursal,
+                it.id_variante_prenda,
+                it.cantidad,
+                f"Bloqueo temporal por reserva de probador #{id_reserva} ({codigo_ticket})",
+                id_usuario,
+            ),
+        )
+
+    # Auditoría inmutable en bitácora (CU25)
+    registrar_bitacora(
+        cursor=cursor,
+        accion=ACCION_INSERT,
+        tabla_afectada="reserva",
+        registro_id=id_reserva,
+        detalle=(
+            f"Reserva para probador #{id_reserva} ({codigo_ticket}) creada por cliente {datos.id_cliente} "
+            f"('{cliente['nombre_completo']}') en sucursal {datos.id_sucursal} ('{sucursal['nombre']}'). "
+            f"{len(datos.items)} prendas separadas. Vigencia: {datos.horas_vigencia} horas."
+        ),
+        id_usuario=id_usuario,
+        ip_address=ip_address,
+    )
+
+    return obtener_ticket_reserva_qr(cursor, id_reserva)
+
+
+def obtener_ticket_reserva_qr(cursor: Any, id_o_codigo: str | int) -> dict:
+    """Recupera el ticket de reserva completo con QR y desglose de prendas."""
+    id_reserva: int | None = None
+    if isinstance(id_o_codigo, int) or (isinstance(id_o_codigo, str) and id_o_codigo.isdigit()):
+        id_reserva = int(id_o_codigo)
+    elif isinstance(id_o_codigo, str) and id_o_codigo.upper().startswith("TKT-"):
+        try:
+            id_reserva = int(id_o_codigo.upper().replace("TKT-", ""))
+        except ValueError:
+            id_reserva = None
+
+    if id_reserva is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Identificador o código de ticket de reserva inválido",
+        )
+
+    cursor.execute(
+        """
+        SELECT
+            r.id_reserva, r.id_cliente,
+            CONCAT(c.nombre_completo) AS cliente_nombre,
+            r.id_sucursal, s.nombre AS sucursal_nombre,
+            r.fecha_reserva, r.fecha_limite, r.estado, r.total
+        FROM reserva r
+        JOIN sucursal s ON r.id_sucursal = s.id_sucursal
+        LEFT JOIN cliente c ON r.id_cliente = c.id_cliente
+        WHERE r.id_reserva = %s;
+        """,
+        (id_reserva,),
+    )
+    cabecera = cursor.fetchone()
+    if not cabecera:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No se encontró la reserva con ticket #{id_reserva}",
+        )
+
+    cursor.execute(
+        """
+        SELECT
+            dr.id_variante_prenda,
+            v.sku_variante,
+            p.nombre AS prenda_nombre,
+            t.nombre AS talla,
+            c.nombre AS color,
+            dr.cantidad,
+            dr.precio_unitario,
+            (dr.cantidad * dr.precio_unitario) AS subtotal
+        FROM detalle_reserva dr
+        JOIN variante_prenda v ON dr.id_variante_prenda = v.id_variante_prenda
+        JOIN prenda p ON v.id_prenda = p.id_prenda
+        JOIN talla t ON v.id_talla = t.id_talla
+        JOIN color c ON v.id_color = c.id_color
+        WHERE dr.id_reserva = %s
+        ORDER BY dr.id_variante_prenda;
+        """,
+        (id_reserva,),
+    )
+    items = cursor.fetchall()
+
+    codigo_ticket = f"TKT-{id_reserva:06d}"
+    sucursal_nom = cabecera["sucursal_nombre"] or "Sucursal"
+    qr_base64 = _generar_qr_ticket(id_reserva, codigo_ticket, sucursal_nom)
+
+    resultado = dict(cabecera)
+    resultado["codigo_ticket"] = codigo_ticket
+    resultado["qr_base64"] = qr_base64
+    resultado["items"] = items
+    return resultado
+
+
+def actualizar_estado_reserva_probador(
+    cursor: Any,
+    id_reserva: int,
+    datos: ReservaProbadorEstadoActualizar,
+    id_usuario: int | None,
+    ip_address: str,
+) -> dict:
+    """Gestiona la transición de estados en tienda para probadores físicos (CU17).
+
+    - Pendiente -> Preparado ('En Probador'): prendas entregadas en cabina.
+    - Preparado/Pendiente -> Atendido ('Completada'): cliente compra las prendas.
+    - Pendiente/Preparado -> Cancelado ('Liberar Stock'): reingresa el stock físico a tienda.
+    """
+    cursor.execute(
+        """
+        SELECT id_reserva, id_cliente, id_sucursal, estado, total
+        FROM reserva
+        WHERE id_reserva = %s;
+        """,
+        (id_reserva,),
+    )
+    reserva = cursor.fetchone()
+    if not reserva:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="La reserva especificada no existe",
+        )
+
+    estado_actual = reserva["estado"]
+    nuevo_estado = datos.nuevo_estado
+
+    if estado_actual == nuevo_estado:
+        return obtener_ticket_reserva_qr(cursor, id_reserva)
+
+    if estado_actual in ("Atendido", "Cancelado"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"La reserva ya está finalizada con estado '{estado_actual}' y no admite cambios",
+        )
+
+    # Obtener ítems de la reserva
+    cursor.execute(
+        """
+        SELECT id_variante_prenda, cantidad, precio_unitario
+        FROM detalle_reserva
+        WHERE id_reserva = %s;
+        """,
+        (id_reserva,),
+    )
+    items_reserva = cursor.fetchall()
+
+    codigo_ticket = f"TKT-{id_reserva:06d}"
+
+    # Lógica según el nuevo estado
+    if nuevo_estado == "Cancelado":
+        # Devolver stock a la sucursal (reingreso de prendas no compradas)
+        for it in items_reserva:
+            cursor.execute(
+                """
+                INSERT INTO movimiento_inventario
+                    (id_sucursal, id_variante_prenda, tipo, cantidad, motivo, id_usuario)
+                VALUES (%s, %s, 'Entrada', %s, %s, %s);
+                """,
+                (
+                    reserva["id_sucursal"],
+                    it["id_variante_prenda"],
+                    it["cantidad"],
+                    f"Reingreso por cancelación de reserva de probador #{id_reserva} ({codigo_ticket})",
+                    id_usuario,
+                ),
+            )
+
+    elif nuevo_estado == "Atendido":
+        # Consolidar la venta presencial en el mostrador
+        subtotal = sum(Decimal(str(it["precio_unitario"])) * it["cantidad"] for it in items_reserva)
+        cursor.execute(
+            """
+            INSERT INTO venta
+                (id_cliente, id_sucursal, id_cajero, id_reserva, tipo_venta,
+                 metodo_pago, subtotal, descuento, total)
+            VALUES (%s, %s, %s, %s, 'Presencial', 'Efectivo', %s, 0.00, %s)
+            RETURNING id_venta;
+            """,
+            (
+                reserva["id_cliente"],
+                reserva["id_sucursal"],
+                id_usuario,
+                id_reserva,
+                subtotal,
+                subtotal,
+            ),
+        )
+        venta_row = cursor.fetchone()
+        id_venta = venta_row["id_venta"]
+
+        for it in items_reserva:
+            subtotal_item = Decimal(str(it["precio_unitario"])) * it["cantidad"]
+            cursor.execute(
+                """
+                INSERT INTO detalle_venta
+                    (id_venta, id_variante_prenda, cantidad, precio_unitario, subtotal)
+                VALUES (%s, %s, %s, %s, %s);
+                """,
+                (id_venta, it["id_variante_prenda"], it["cantidad"], it["precio_unitario"], subtotal_item),
+            )
+
+    # Actualizar estado de la reserva
+    cursor.execute(
+        "UPDATE reserva SET estado = %s, updated_at = NOW() WHERE id_reserva = %s;",
+        (nuevo_estado, id_reserva),
+    )
+
+    # Registrar en bitácora inmutable (CU25)
+    detalle_bitacora = (
+        f"Reserva #{id_reserva} ({codigo_ticket}) transicionó de '{estado_actual}' a '{nuevo_estado}'. "
+        f"Motivo: {datos.motivo or 'Gestión de probador en sucursal'}. "
+        f"Sucursal: {reserva['id_sucursal']}."
+    )
+    registrar_bitacora(
+        cursor=cursor,
+        accion=ACCION_UPDATE,
+        tabla_afectada="reserva",
+        registro_id=id_reserva,
+        detalle=detalle_bitacora,
+        id_usuario=id_usuario,
+        ip_address=ip_address,
+    )
+
+    return obtener_ticket_reserva_qr(cursor, id_reserva)
+
+
+def listar_reservas_sucursal(
+    cursor: Any,
+    id_sucursal: int | None = None,
+    estado: str | None = None,
+    skip: int = 0,
+    limit: int = 50,
+) -> list[dict]:
+    """Lista las reservas asignadas a una sucursal para la atención en probador (CU17)."""
+    condiciones = ["1=1"]
+    parametros: list[Any] = []
+
+    if id_sucursal is not None:
+        condiciones.append("r.id_sucursal = %s")
+        parametros.append(id_sucursal)
+
+    if estado is not None and estado.strip():
+        condiciones.append("r.estado = %s")
+        parametros.append(estado.strip())
+
+    parametros.extend([limit, skip])
+
+    cursor.execute(
+        f"""
+        SELECT
+            r.id_reserva, r.id_cliente,
+            CONCAT(c.nombre_completo) AS cliente_nombre,
+            c.telefono AS cliente_telefono,
+            r.id_sucursal, s.nombre AS sucursal_nombre,
+            r.fecha_reserva, r.fecha_limite, r.estado, r.total,
+            (SELECT COUNT(*) FROM detalle_reserva dr WHERE dr.id_reserva = r.id_reserva) AS total_prendas
+        FROM reserva r
+        JOIN sucursal s ON r.id_sucursal = s.id_sucursal
+        LEFT JOIN cliente c ON r.id_cliente = c.id_cliente
+        WHERE {" AND ".join(condiciones)}
+        ORDER BY 
+            CASE 
+                WHEN r.estado = 'Pendiente' THEN 1
+                WHEN r.estado = 'Preparado' THEN 2
+                ELSE 3 
+            END,
+            r.fecha_reserva DESC
+        LIMIT %s OFFSET %s;
+        """,
+        tuple(parametros),
     )
     return cursor.fetchall()
