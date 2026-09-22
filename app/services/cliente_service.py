@@ -79,6 +79,22 @@ def obtener_cliente(cursor, id_cliente: int) -> dict[str, Any] | None:
     return dict(fila) if fila else None
 
 
+def obtener_cliente_por_correo(cursor, correo: str) -> dict[str, Any] | None:
+    """Recupera la ficha vinculada al correo de una cuenta de cliente.
+
+    La base actual no posee una clave foránea entre ``usuario`` y ``cliente``.
+    El auto-registro crea ambos registros con el mismo correo, por lo que esta
+    es la relación existente que permite resolver la ficha sin aceptar un
+    ``id_cliente`` proporcionado por el navegador.
+    """
+    cursor.execute(
+        _SELECT_CLIENTE + " WHERE LOWER(correo) = LOWER(%s);",
+        (correo,),
+    )
+    fila = cursor.fetchone()
+    return dict(fila) if fila else None
+
+
 def existe_ci(cursor, ci: str, excluir_id: int | None = None) -> bool:
     """Comprueba si una cédula ya está asignada a otro cliente.
 
@@ -201,10 +217,56 @@ def inhabilitar_cliente(cursor, id_cliente: int) -> None:
     )
 
 
-def existe_correo_usuario(cursor, correo: str) -> bool:
-    """Comprueba si un correo ya está registrado en la tabla usuario."""
-    cursor.execute("SELECT 1 FROM usuario WHERE LOWER(correo) = LOWER(%s);", (correo,))
+def existe_correo_usuario(
+    cursor,
+    correo: str,
+    excluir_id_usuario: int | None = None,
+) -> bool:
+    """Comprueba si un correo ya está registrado en otra cuenta de usuario."""
+    if excluir_id_usuario is None:
+        cursor.execute(
+            "SELECT 1 FROM usuario WHERE LOWER(correo) = LOWER(%s);",
+            (correo,),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT 1
+            FROM usuario
+            WHERE LOWER(correo) = LOWER(%s) AND id_usuario <> %s;
+            """,
+            (correo, excluir_id_usuario),
+        )
     return cursor.fetchone() is not None
+
+
+def sincronizar_contacto_usuario(
+    cursor,
+    id_usuario: int,
+    cambios_cliente: dict[str, Any],
+) -> None:
+    """Mantiene el correo/teléfono de la cuenta alineados con su propia ficha.
+
+    Solo se usa en autogestión, una vez que el backend ya resolvió la
+    propiedad. Mantener el correo alineado es imprescindible porque, ante la
+    ausencia de una FK, ese dato es la vinculación disponible entre tablas.
+    """
+    campos_sincronizables = {
+        campo: cambios_cliente[campo]
+        for campo in ("correo", "telefono")
+        if campo in cambios_cliente
+    }
+    if not campos_sincronizables:
+        return
+
+    columnas = [f"{campo} = %s" for campo in campos_sincronizables]
+    valores = list(campos_sincronizables.values())
+    columnas.append("updated_at = CURRENT_TIMESTAMP")
+    valores.append(id_usuario)
+    cursor.execute(
+        f"UPDATE usuario SET {', '.join(columnas)} WHERE id_usuario = %s;",
+        tuple(valores),
+    )
 
 
 def auto_registrar_cliente(cursor, datos: dict[str, Any], ip_cliente: str | None = None) -> dict[str, Any]:

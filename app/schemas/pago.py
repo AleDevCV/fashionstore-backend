@@ -31,6 +31,9 @@ class StripeCheckoutPeticion(BaseModel):
         default="http://localhost:4200/pago/cancelado",
         description="URL de redirección si el cliente cancela",
     )
+    nit_ci: str | None = Field(default=None, description="NIT o CI para el comprobante")
+    razon_social: str | None = Field(default=None, description="Razón social para el comprobante")
+    enviar_email: bool = Field(default=False, description="Si se debe enviar el comprobante por email")
 
 
 class StripeCheckoutRespuesta(BaseModel):

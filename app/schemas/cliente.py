@@ -14,7 +14,7 @@ respetan esa estructura para no desalinear la API de la base de datos.
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 # Estados admitidos por la restricción CHECK de `cliente.estado`.
 EstadoCliente = Literal["Activo", "Inactivo"]
@@ -36,7 +36,12 @@ class ClienteCrear(BaseModel):
     nombre_completo: str = Field(
         ..., min_length=3, max_length=200, examples=["María René Ortiz"]
     )
-    telefono: str | None = Field(default=None, max_length=20, examples=["78911223"])
+    telefono: str | None = Field(
+        default=None,
+        max_length=20,
+        pattern=r"^[0-9+() -]*$",
+        examples=["78911223"],
+    )
     correo: EmailStr | None = Field(default=None, examples=["maria@gmail.com"])
     direccion_envio: str | None = Field(default=None, max_length=255)
 
@@ -50,10 +55,30 @@ class ClienteActualizar(BaseModel):
 
     ci: str | None = Field(default=None, min_length=4, max_length=20)
     nombre_completo: str | None = Field(default=None, min_length=3, max_length=200)
-    telefono: str | None = Field(default=None, max_length=20)
+    telefono: str | None = Field(default=None, max_length=20, pattern=r"^[0-9+() -]*$")
     correo: EmailStr | None = Field(default=None)
     direccion_envio: str | None = Field(default=None, max_length=255)
     estado: EstadoCliente | None = Field(default=None)
+
+
+class ClienteAutogestionActualizar(BaseModel):
+    """Campos que un cliente puede actualizar en su propia ficha.
+
+    El estado se excluye deliberadamente: la autogestión no concede la
+    capacidad administrativa de inactivar o reactivar fichas.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ci: str | None = Field(default=None, min_length=4, max_length=20)
+    nombre_completo: str | None = Field(default=None, min_length=3, max_length=200)
+    telefono: str | None = Field(
+        default=None,
+        max_length=20,
+        pattern=r"^[0-9+() -]*$",
+    )
+    correo: EmailStr | None = Field(default=None)
+    direccion_envio: str | None = Field(default=None, max_length=255)
 
 
 class ClienteRespuesta(BaseModel):
@@ -81,7 +106,12 @@ class RegistroClientePeticion(BaseModel):
     ci: str = Field(..., min_length=4, max_length=20, examples=["8472911"])
     correo: EmailStr = Field(..., examples=["claudia.torrez@gmail.com"])
     password: str = Field(..., min_length=4, max_length=72, examples=["claveSegura123"])
-    telefono: str | None = Field(default=None, max_length=20, examples=["77334455"])
+    telefono: str | None = Field(
+        default=None,
+        max_length=20,
+        pattern=r"^[0-9+() -]*$",
+        examples=["77334455"],
+    )
     direccion_envio: str | None = Field(default=None, max_length=255, examples=["Av. San Martín #123"])
 
 

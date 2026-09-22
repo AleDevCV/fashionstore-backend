@@ -23,6 +23,8 @@ from fastapi.staticfiles import StaticFiles
 from psycopg2 import OperationalError
 from dotenv import load_dotenv
 
+# Carga las variables definidas en el archivo .env hacia os.environ ANTES de importar los módulos de la app
+load_dotenv()
 from app.database import close_pool
 from app.routers import (
     auth,
@@ -48,8 +50,6 @@ from app.routers import (
     ventas,
 )
 
-# Carga las variables definidas en el archivo .env hacia os.environ
-load_dotenv()
 
 
 @asynccontextmanager

@@ -122,15 +122,20 @@ def crear_reserva(
             detail="La sucursal especificada no existe",
         )
 
-    # Validar cliente
+    # Validar cliente y asegurar que pertenece al usuario autenticado
     cursor.execute(
-        "SELECT id_cliente FROM cliente WHERE id_cliente = %s AND estado = 'Activo';",
-        (datos.id_cliente,),
+        """
+        SELECT c.id_cliente 
+        FROM cliente c
+        JOIN usuario u ON LOWER(c.correo) = LOWER(u.correo)
+        WHERE c.id_cliente = %s AND u.id_usuario = %s AND c.estado = 'Activo';
+        """,
+        (datos.id_cliente, id_usuario),
     )
     if not cursor.fetchone():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="El cliente especificado no existe o está inactivo",
+            detail="El cliente especificado no existe, está inactivo o no corresponde a su usuario",
         )
 
     # Validar stock para cada item
@@ -201,12 +206,10 @@ def obtener_reserva_por_id(cursor: Any, id_reserva: int) -> dict:
     """Recupera una reserva completa con sus ítems detallados."""
     cursor.execute(
         """
-        SELECT
-            r.id_reserva, r.id_cliente, r.id_sucursal,
-            s.nombre AS sucursal_nombre,
-            r.fecha_reserva, r.fecha_limite, r.estado, r.total
+        SELECT r.*, s.nombre AS sucursal_nombre, v.id_venta
         FROM reserva r
         JOIN sucursal s ON r.id_sucursal = s.id_sucursal
+        LEFT JOIN venta v ON r.id_reserva = v.id_reserva
         WHERE r.id_reserva = %s;
         """,
         (id_reserva,),
@@ -279,7 +282,7 @@ def confirmar_venta(
         """
         SELECT id_reserva, id_cliente, id_sucursal, estado, total
         FROM reserva
-        WHERE id_reserva = %s;
+        WHERE id_reserva = %s FOR UPDATE;
         """,
         (datos.id_reserva,),
     )

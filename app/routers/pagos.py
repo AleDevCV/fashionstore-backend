@@ -52,7 +52,8 @@ def crear_sesion_stripe(
     Stripe llama al webhook /stripe/webhook al confirmar el pago.
     """
     ip = obtener_ip_cliente(request)
-    return svc.crear_sesion_stripe(cursor=cursor, datos=datos, ip_address=ip)
+    id_usuario = usuario.get("id_usuario")
+    return svc.crear_sesion_stripe(cursor=cursor, datos=datos, id_usuario=id_usuario, ip_address=ip)
 
 
 @router.post(
@@ -99,7 +100,8 @@ def generar_qr(
     Válido por 15 minutos. La confirmación se realiza en /qr/confirmar.
     """
     ip = obtener_ip_cliente(request)
-    return svc.generar_qr_boliviano(cursor=cursor, datos=datos, ip_address=ip)
+    id_usuario = usuario.get("id_usuario")
+    return svc.generar_qr_boliviano(cursor=cursor, datos=datos, id_usuario=id_usuario, ip_address=ip)
 
 
 @router.post(

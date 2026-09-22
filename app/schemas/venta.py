@@ -97,6 +97,7 @@ class ReservaRespuesta(BaseModel):
     estado: str
     total: Decimal
     items: list[DetalleReservaRespuesta] = Field(default_factory=list)
+    id_venta: int | None = Field(default=None, description="ID de la venta si la reserva ya fue atendida")
 
     model_config = ConfigDict(from_attributes=True)
 

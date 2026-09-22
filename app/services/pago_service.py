@@ -23,18 +23,22 @@ import qrcode
 import stripe
 from fastapi import HTTPException, Request, status
 
+from app.schemas.comprobante import ComprobanteGenerarPeticion
 from app.schemas.pago import (
+    PagoTransaccionRespuesta,
     QRConfirmarPeticion,
     QRGenerarPeticion,
+    QRGenerarRespuesta,
     StripeCheckoutPeticion,
 )
-from app.services.bitacora_service import ACCION_INSERT, registrar_bitacora
-from app.services.venta_service import confirmar_venta
 from app.schemas.venta import VentaConfirmarPeticion
+from app.services.bitacora_service import ACCION_INSERT, ACCION_UPDATE, registrar_bitacora
+from app.services.comprobante_service import generar_comprobante
+from app.services.venta_service import confirmar_venta
 
 
 # Configurar Stripe con la clave del entorno (modo test si empieza con sk_test_)
-stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "sk_test_fashionstore_mock_key")
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4200")
 
@@ -46,6 +50,7 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4200")
 def crear_sesion_stripe(
     cursor: Any,
     datos: StripeCheckoutPeticion,
+    id_usuario: int | None,
     ip_address: str,
 ) -> dict:
     """Crea una sesión de Stripe Checkout para pagar una reserva.
@@ -105,6 +110,9 @@ def crear_sesion_stripe(
             metadata={
                 "id_reserva": str(datos.id_reserva),
                 "id_cliente": str(datos.id_cliente),
+                "nit_ci": datos.nit_ci or "",
+                "razon_social": datos.razon_social or "",
+                "enviar_email": "1" if datos.enviar_email else "0",
             },
         )
         session_id = session.id
@@ -136,7 +144,7 @@ def crear_sesion_stripe(
         tabla_afectada="pago_transaccion",
         registro_id=datos.id_reserva,
         detalle=f"Sesión Stripe creada para reserva #{datos.id_reserva}. Monto: Bs {monto_bs}.",
-        id_usuario=datos.id_cliente,
+        id_usuario=id_usuario,
         ip_address=ip_address,
     )
 
@@ -183,10 +191,15 @@ def procesar_webhook_stripe(
         import json
         event = json.loads(payload)
 
-    if event.get("type") != "checkout.session.completed":
-        return {"status": "ignorado", "tipo_evento": event.get("type")}
+    if hasattr(event, "to_dict"):
+        event_dict = event.to_dict()
+    else:
+        event_dict = event
 
-    session = event["data"]["object"]
+    if event_dict.get("type") != "checkout.session.completed":
+        return {"status": "ignorado", "tipo_evento": event_dict.get("type")}
+
+    session = event_dict.get("data", {}).get("object", {})
     metadata = session.get("metadata", {})
     id_reserva = int(metadata.get("id_reserva", 0))
     id_cliente = int(metadata.get("id_cliente", 0))
@@ -214,8 +227,15 @@ def procesar_webhook_stripe(
         metodo_pago="Tarjeta",
         descuento=Decimal("0.00"),
     )
-    venta = confirmar_venta(cursor, datos_venta, id_cliente or None, ip_address)
-    id_venta = venta["id_venta"]
+    try:
+        # En compras digitales (webhook), no hay un cajero involucrado directamente
+        # o no tenemos el id_usuario en el payload, por lo que id_usuario=None
+        venta = confirmar_venta(cursor, datos_venta, None, ip_address)
+        id_venta = venta["id_venta"]
+    except HTTPException as e:
+        if e.status_code == status.HTTP_409_CONFLICT:
+            return {"status": "ignorado", "razon": "Reserva ya atendida anteriormente"}
+        raise e
 
     # Actualizar pago_transaccion con el id_venta
     cursor.execute(
@@ -231,6 +251,26 @@ def procesar_webhook_stripe(
             session_id,
         ),
     )
+
+    # Generar comprobante PDF si hay datos fiscales
+    nit_ci = metadata.get("nit_ci")
+    razon_social = metadata.get("razon_social")
+    enviar_email = metadata.get("enviar_email") == "1"
+
+    if nit_ci and razon_social:
+        datos_comp = ComprobanteGenerarPeticion(
+            id_venta=id_venta,
+            nit_ci=nit_ci,
+            razon_social=razon_social,
+            enviar_email=enviar_email,
+        )
+        try:
+            generar_comprobante(cursor, datos_comp, None, ip_address)
+        except Exception:
+            # Si falla la generación del comprobante, ignoramos el error
+            # para no causar HTTP 500 y no reintentar el webhook en Stripe,
+            # ya que la venta en BD ya fue creada exitosamente.
+            pass
 
     return {"status": "ok", "id_venta": id_venta}
 
@@ -248,6 +288,7 @@ def _generar_referencia() -> str:
 def generar_qr_boliviano(
     cursor: Any,
     datos: QRGenerarPeticion,
+    id_usuario: int | None,
     ip_address: str,
 ) -> dict:
     """Genera un código QR de pago boliviano con los datos de la reserva.
@@ -320,7 +361,7 @@ def generar_qr_boliviano(
         tabla_afectada="pago_transaccion",
         registro_id=datos.id_reserva,
         detalle=f"QR boliviano generado para reserva #{datos.id_reserva}. Ref: {referencia}. Monto: Bs {monto_str}.",
-        id_usuario=datos.id_cliente,
+        id_usuario=id_usuario,
         ip_address=ip_address,
     )
 

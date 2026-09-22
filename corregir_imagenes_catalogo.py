@@ -12,6 +12,7 @@ Script para actualizar el catálogo de prendas en la base de datos PostgreSQL:
 
 import os
 import sys
+from urllib.parse import urlparse
 
 # Permitir importar la app
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
@@ -27,6 +28,12 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "fashionstore")
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "fashionstore123")
+
+
+def es_url_unsplash(url: str) -> bool:
+    """Valida si la URL pertenece al dominio Unsplash."""
+    hostname = (urlparse(url).hostname or "").lower()
+    return hostname == "unsplash.com" or hostname.endswith(".unsplash.com")
 
 # Catálogo maestro con prendas PNG recortadas y transparentes
 PRENDAS_ACTUALIZACION = [
@@ -248,7 +255,7 @@ def ejecutar_correccion():
             activas_count = 0
             for r in rows:
                 url = r["url_imagen"] or ""
-                if "unsplash.com" in url:
+                if es_url_unsplash(url):
                     unsplash_count += 1
                 if url.lower().endswith(".png"):
                     png_count += 1
