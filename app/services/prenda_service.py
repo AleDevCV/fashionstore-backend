@@ -398,6 +398,20 @@ def _reemplazar_imagen_principal(cursor, id_prenda: int, url_imagen: str) -> Non
         None
     """
     cursor.execute(
+        """
+        SELECT url_imagen
+        FROM imagen_prenda
+        WHERE id_prenda = %s AND es_principal = TRUE
+        ORDER BY id_imagen
+        LIMIT 1;
+        """,
+        (id_prenda,),
+    )
+    imagen_actual = cursor.fetchone()
+    if imagen_actual and imagen_actual["url_imagen"] == url_imagen:
+        return
+
+    cursor.execute(
         "UPDATE imagen_prenda SET es_principal = FALSE WHERE id_prenda = %s;",
         (id_prenda,),
     )

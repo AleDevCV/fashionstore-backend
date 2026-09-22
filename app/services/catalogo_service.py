@@ -64,21 +64,22 @@ def _construir_filtros(
         condiciones.append("p.genero = %s")
         valores.append(genero)
 
-    # EXISTS en vez de JOIN: filtrar por talla no debe multiplicar las filas de
-    # la prenda ni obligar a un DISTINCT posterior.
+    # Un unico EXISTS obliga a que talla y color pertenezcan a la misma
+    # variante. Tambien evita duplicar prendas, como ocurriria con un JOIN.
+    filtros_variante: list[str] = []
     if id_talla:
-        condiciones.append(
-            "EXISTS (SELECT 1 FROM variante_prenda v"
-            " WHERE v.id_prenda = p.id_prenda AND v.id_talla = %s)"
-        )
+        filtros_variante.append("v.id_talla = %s")
         valores.append(id_talla)
-
     if id_color:
+        filtros_variante.append("v.id_color = %s")
+        valores.append(id_color)
+    if filtros_variante:
         condiciones.append(
             "EXISTS (SELECT 1 FROM variante_prenda v"
-            " WHERE v.id_prenda = p.id_prenda AND v.id_color = %s)"
+            " WHERE v.id_prenda = p.id_prenda AND "
+            + " AND ".join(filtros_variante)
+            + ")"
         )
-        valores.append(id_color)
 
     if precio_min is not None:
         condiciones.append("p.precio_base >= %s")
@@ -175,6 +176,8 @@ def consultar_catalogo(
             prenda["id_prenda"],
             prenda["precio_base"],
             con_disponibilidad=con_disponibilidad,
+            id_talla=id_talla,
+            id_color=id_color,
         )
 
     return {
@@ -190,6 +193,8 @@ def listar_variantes_catalogo(
     id_prenda: int,
     precio_base,
     con_disponibilidad: bool = False,
+    id_talla: int | None = None,
+    id_color: int | None = None,
 ) -> list[dict[str, Any]]:
     """Devuelve las variantes de una prenda con su precio final y su stock.
 
@@ -205,6 +210,15 @@ def listar_variantes_catalogo(
     Retorna:
         list[dict]: variantes con talla, color, precio y stock.
     """
+    condiciones_variante = ["v.id_prenda = %s"]
+    valores_variante: list[Any] = [id_prenda]
+    if id_talla:
+        condiciones_variante.append("v.id_talla = %s")
+        valores_variante.append(id_talla)
+    if id_color:
+        condiciones_variante.append("v.id_color = %s")
+        valores_variante.append(id_color)
+
     cursor.execute(
         """
         SELECT  v.id_variante_prenda,
@@ -219,12 +233,14 @@ def listar_variantes_catalogo(
         LEFT JOIN talla t ON v.id_talla = t.id_talla
         LEFT JOIN color col ON v.id_color = col.id_color
         LEFT JOIN inventario inv ON inv.id_variante_prenda = v.id_variante_prenda
-        WHERE v.id_prenda = %s
+        WHERE """
+        + " AND ".join(condiciones_variante)
+        + """
         GROUP BY v.id_variante_prenda, v.id_talla, t.nombre,
                  v.id_color, col.nombre, col.codigo_hex, v.precio_adicional
         ORDER BY v.id_talla, col.nombre;
         """,
-        (id_prenda,),
+        tuple(valores_variante),
     )
 
     variantes: list[dict[str, Any]] = []

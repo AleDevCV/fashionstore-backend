@@ -116,6 +116,12 @@ class PrendaActualizar(BaseModel):
     estado: EstadoPrenda | None = Field(default=None)
 
 
+class ImagenPrendaRespuesta(BaseModel):
+    """URL persistente obtenida despues de subir una imagen."""
+
+    url_imagen: str
+
+
 class PrendaRespuesta(BaseModel):
     """Prenda con su categoría, temporada, su imagen principal y sus variantes."""
 
