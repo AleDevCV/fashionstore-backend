@@ -6,9 +6,9 @@ Sistemas de Información II - UAGRM
 CRUD de la clasificación jerárquica del catálogo.
 
 SEGURIDAD
-  Todos los endpoints exigen sesión activa (get_current_user). No se restringe
-  al rol Administrador porque el Encargado de Sucursal también consulta y
-  organiza la clasificación del inventario que gestiona.
+  La consulta administrativa exige ``categorias.ver`` y las operaciones de
+  alta, edición e inactivación exigen ``categorias.gestionar``. El catálogo
+  público utiliza /api/catalogo/filtros y no depende de este router.
 =============================================================================
 """
 
@@ -23,7 +23,7 @@ from app.schemas.categoria import (
 )
 from app.schemas.usuario import MensajeRespuesta
 from app.services import categoria_service as svc
-from app.services.auth_service import get_current_user
+from app.services.auth_service import requiere_permiso
 from app.services.bitacora_service import (
     ACCION_INACTIVAR,
     ACCION_INSERT,
@@ -34,6 +34,9 @@ from app.services.bitacora_service import (
 
 router = APIRouter(prefix="/categorias", tags=["Categorías (CU07)"])
 
+puede_ver_categorias = requiere_permiso("categorias.ver")
+puede_gestionar_categorias = requiere_permiso("categorias.gestionar")
+
 
 @router.get(
     "/",
@@ -43,7 +46,7 @@ router = APIRouter(prefix="/categorias", tags=["Categorías (CU07)"])
 def listar_categorias(
     estado: str | None = Query(default=None, description="Activo o Inactivo"),
     cursor=Depends(get_db),
-    usuario=Depends(get_current_user),
+    usuario=Depends(puede_ver_categorias),
 ):
     """Devuelve la jerarquía de categorías con su categoría padre resuelta.
 
@@ -68,7 +71,7 @@ def crear_categoria(
     datos: CategoriaCrear,
     request: Request,
     cursor=Depends(get_db),
-    usuario=Depends(get_current_user),
+    usuario=Depends(puede_gestionar_categorias),
 ):
     """Registra una categoría, opcionalmente colgando de otra.
 
@@ -134,7 +137,7 @@ def actualizar_categoria(
     datos: CategoriaActualizar,
     request: Request,
     cursor=Depends(get_db),
-    usuario=Depends(get_current_user),
+    usuario=Depends(puede_gestionar_categorias),
 ):
     """Modifica una categoría existente.
 
@@ -215,7 +218,7 @@ def inhabilitar_categoria(
     id_categoria: int,
     request: Request,
     cursor=Depends(get_db),
-    usuario=Depends(get_current_user),
+    usuario=Depends(puede_gestionar_categorias),
 ):
     """Retira una categoría del catálogo mediante baja lógica.
 

@@ -6,9 +6,10 @@ Sistemas de Información II - UAGRM
 CRUD de los datos maestros de los compradores.
 
 SEGURIDAD
-  Todos los endpoints exigen sesión activa (get_current_user), pero NO el rol
-  de Administrador: según el CU05 el Cajero y el propio Cliente también
-  registran y consultan fichas.
+  Las operaciones administrativas usan los permisos granulares existentes
+  ``clientes.ver``, ``clientes.crear``, ``clientes.editar`` y
+  ``clientes.inactivar``. El Cliente no recibe ninguno de ellos: consulta y
+  actualiza su propia ficha exclusivamente mediante ``/me``.
 =============================================================================
 """
 
@@ -16,10 +17,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from psycopg2 import errors as pg_errors
 
 from app.database import get_db
-from app.schemas.cliente import ClienteActualizar, ClienteCrear, ClienteRespuesta
+from app.schemas.cliente import (
+    ClienteActualizar,
+    ClienteAutogestionActualizar,
+    ClienteCrear,
+    ClienteRespuesta,
+)
 from app.schemas.usuario import MensajeRespuesta
 from app.services import cliente_service as svc
-from app.services.auth_service import get_current_user
+from app.services.auth_service import requiere_permiso, requiere_rol
 from app.services.bitacora_service import (
     ACCION_INACTIVAR,
     ACCION_INSERT,
@@ -29,6 +35,12 @@ from app.services.bitacora_service import (
 )
 
 router = APIRouter(prefix="/clientes", tags=["Clientes (CU05)"])
+
+puede_ver_clientes = requiere_permiso("clientes.ver")
+puede_crear_clientes = requiere_permiso("clientes.crear")
+puede_editar_clientes = requiere_permiso("clientes.editar")
+puede_inactivar_clientes = requiere_permiso("clientes.inactivar")
+solo_cliente = requiere_rol(["Cliente"])
 
 
 @router.get(
@@ -40,7 +52,7 @@ def listar_clientes(
     busqueda: str | None = Query(default=None, description="Busca por CI o nombre"),
     estado: str | None = Query(default=None, description="Activo o Inactivo"),
     cursor=Depends(get_db),
-    usuario=Depends(get_current_user),
+    usuario=Depends(puede_ver_clientes),
 ):
     """Devuelve las fichas de cliente, con buscador y filtro de estado.
 
@@ -59,6 +71,100 @@ def listar_clientes(
     return svc.listar_clientes(cursor, busqueda, estado)
 
 
+def _obtener_ficha_propia(cursor, usuario: dict) -> dict:
+    """Resuelve la ficha desde la identidad autenticada, nunca desde la URL."""
+    cliente = svc.obtener_cliente_por_correo(cursor, usuario["correo"])
+    if cliente is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No existe una ficha de cliente vinculada a su cuenta",
+        )
+    return cliente
+
+
+@router.get(
+    "/me",
+    response_model=ClienteRespuesta,
+    summary="Consultar la ficha propia del cliente autenticado",
+)
+def obtener_mi_ficha(
+    cursor=Depends(get_db),
+    usuario=Depends(solo_cliente),
+):
+    """Devuelve únicamente la ficha vinculada a la cuenta autenticada."""
+    return _obtener_ficha_propia(cursor, usuario)
+
+
+@router.put(
+    "/me",
+    response_model=ClienteRespuesta,
+    summary="Actualizar la ficha propia del cliente autenticado",
+)
+def actualizar_mi_ficha(
+    datos: ClienteAutogestionActualizar,
+    request: Request,
+    cursor=Depends(get_db),
+    usuario=Depends(solo_cliente),
+):
+    """Actualiza datos personales sin aceptar un identificador de propiedad."""
+    actual = _obtener_ficha_propia(cursor, usuario)
+    cambios = datos.model_dump(exclude_unset=True)
+    if not cambios:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Debe enviar al menos un campo para actualizar",
+        )
+
+    campos_obligatorios_vacios = [
+        campo
+        for campo in ("ci", "nombre_completo", "correo")
+        if campo in cambios and cambios[campo] is None
+    ]
+    if campos_obligatorios_vacios:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CI, nombre completo y correo no pueden quedar vacíos",
+        )
+
+    id_cliente = actual["id_cliente"]
+    if "ci" in cambios and svc.existe_ci(cursor, cambios["ci"], excluir_id=id_cliente):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="La cédula ingresada ya está asignada a otro cliente",
+        )
+
+    if cambios.get("correo"):
+        if svc.existe_correo(cursor, cambios["correo"], excluir_id=id_cliente):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El correo electrónico ya está registrado por otro cliente",
+            )
+        if svc.existe_correo_usuario(
+            cursor,
+            cambios["correo"],
+            excluir_id_usuario=usuario["id_usuario"],
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El correo electrónico ya está registrado por otro usuario",
+            )
+
+    svc.actualizar_cliente(cursor, id_cliente, cambios)
+    svc.sincronizar_contacto_usuario(cursor, usuario["id_usuario"], cambios)
+
+    resumen = ", ".join(cambios)
+    registrar_bitacora(
+        cursor=cursor,
+        accion=ACCION_UPDATE,
+        tabla_afectada="cliente",
+        registro_id=id_cliente,
+        detalle=f"Autogestión de ficha propia. Campos: {resumen}.",
+        id_usuario=usuario["id_usuario"],
+        ip_address=obtener_ip_cliente(request),
+    )
+    return svc.obtener_cliente(cursor, id_cliente)
+
+
 @router.get(
     "/{id_cliente}",
     response_model=ClienteRespuesta,
@@ -67,7 +173,7 @@ def listar_clientes(
 def obtener_cliente(
     id_cliente: int,
     cursor=Depends(get_db),
-    usuario=Depends(get_current_user),
+    usuario=Depends(puede_ver_clientes),
 ):
     """Recupera la ficha de un cliente concreto.
 
@@ -101,7 +207,7 @@ def crear_cliente(
     datos: ClienteCrear,
     request: Request,
     cursor=Depends(get_db),
-    usuario=Depends(get_current_user),
+    usuario=Depends(puede_crear_clientes),
 ):
     """Registra la ficha maestra de un comprador.
 
@@ -167,7 +273,7 @@ def actualizar_cliente(
     datos: ClienteActualizar,
     request: Request,
     cursor=Depends(get_db),
-    usuario=Depends(get_current_user),
+    usuario=Depends(puede_editar_clientes),
 ):
     """Modifica los datos de una ficha existente.
 
@@ -243,7 +349,7 @@ def inhabilitar_cliente(
     id_cliente: int,
     request: Request,
     cursor=Depends(get_db),
-    usuario=Depends(get_current_user),
+    usuario=Depends(puede_inactivar_clientes),
 ):
     """Da de baja lógica a un cliente cambiando su estado a 'Inactivo'.
 
