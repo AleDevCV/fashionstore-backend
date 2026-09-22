@@ -12,3 +12,4 @@ __pycache__/
 .pytest_cache/
 tools.yaml
 tests
+database_backup.sql
