@@ -11,14 +11,20 @@ SEGURIDAD
 =============================================================================
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from psycopg2 import errors as pg_errors
 
 from app.database import get_db
-from app.schemas.prenda import PrendaActualizar, PrendaCrear, PrendaRespuesta
+from app.schemas.prenda import (
+    ImagenPrendaRespuesta,
+    PrendaActualizar,
+    PrendaCrear,
+    PrendaRespuesta,
+)
 from app.schemas.usuario import MensajeRespuesta
 from app.services import categoria_service as cat_svc
 from app.services import prenda_service as svc
+from app.services.image_storage_service import subir_imagen_prenda as almacenar_imagen_prenda
 from app.services.auth_service import get_current_user, requiere_rol
 from app.services.bitacora_service import (
     ACCION_INACTIVAR,
@@ -66,6 +72,21 @@ def listar_colores(cursor=Depends(get_db), usuario=Depends(get_current_user)):
         list[dict]: colores ordenados alfabéticamente.
     """
     return svc.listar_colores(cursor)
+
+
+@router.post(
+    "/imagenes",
+    response_model=ImagenPrendaRespuesta,
+    status_code=status.HTTP_201_CREATED,
+    summary="Subir una imagen de prenda",
+)
+async def subir_imagen(
+    archivo: UploadFile = File(...),
+    administrador=Depends(solo_administrador),
+):
+    """Valida y almacena una imagen; solo esta disponible para Administradores."""
+    url_imagen = await almacenar_imagen_prenda(archivo)
+    return ImagenPrendaRespuesta(url_imagen=url_imagen)
 
 
 # -----------------------------------------------------------------------------
