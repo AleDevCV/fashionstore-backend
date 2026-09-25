@@ -83,6 +83,9 @@ services:
       # .gitignore), de modo que el token NUNCA queda escrito en este compose.
       HF_TOKEN: ${HF_TOKEN:-}
 
+      # Token de Replicate para IDM-VTON (yisol/IDM-VTON).
+      REPLICATE_API_TOKEN: ${REPLICATE_API_TOKEN:-}
+
     ports:
       # La API queda accesible desde el navegador de Windows en localhost:8000
       - "${API_PORT_HOST:-8000}:8000"

@@ -153,6 +153,8 @@ def probar_prenda_virtual(
     id_prenda_audit = respuesta.metadatos_calce.prenda_id or peticion.id_prenda or peticion.id_variante_prenda
     if respuesta.metadatos_calce.es_fallback or not respuesta.es_generativo:
         metodo_audit = "opencv_fallback"
+    elif respuesta.metodo_usado == "replicate_idm_vton":
+        metodo_audit = "replicate_idm_vton"
     elif respuesta.metodo_usado == "fashn_vton_ai":
         metodo_audit = "fashn_vton_ai"
     else:

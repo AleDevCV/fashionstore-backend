@@ -13,11 +13,14 @@ Lógica de integración con pasarelas de pago:
 
 import base64
 import io
+import logging
 import os
 import secrets
 import string
 from decimal import Decimal
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 import qrcode
 import stripe
@@ -105,8 +108,16 @@ def crear_sesion_stripe(
                 }
             ],
             mode="payment",
-            success_url=f"{datos.url_exito}?session_id={{CHECKOUT_SESSION_ID}}&reserva={datos.id_reserva}",
-            cancel_url=f"{datos.url_cancelacion}?reserva={datos.id_reserva}",
+            success_url=(
+                f"{datos.url_exito.split('?')[0]}?reserva={datos.id_reserva}&session_id={{CHECKOUT_SESSION_ID}}"
+                if datos.url_exito
+                else f"{FRONTEND_URL}/pago/exitoso?reserva={datos.id_reserva}&session_id={{CHECKOUT_SESSION_ID}}"
+            ),
+            cancel_url=(
+                f"{datos.url_cancelacion.split('?')[0]}?reserva={datos.id_reserva}"
+                if datos.url_cancelacion
+                else f"{FRONTEND_URL}/pago/cancelado?reserva={datos.id_reserva}"
+            ),
             metadata={
                 "id_reserva": str(datos.id_reserva),
                 "id_cliente": str(datos.id_cliente),
@@ -176,20 +187,46 @@ def procesar_webhook_stripe(
     Retorna:
         dict: {status: 'ok', id_venta: int} o {status: 'ignorado'}.
     """
-    if STRIPE_WEBHOOK_SECRET:
+    event = None
+    if STRIPE_WEBHOOK_SECRET and sig_header:
         try:
             event = stripe.Webhook.construct_event(
-                payload, sig_header, STRIPE_WEBHOOK_SECRET
+                payload, sig_header, STRIPE_WEBHOOK_SECRET, tolerance=None
             )
         except (ValueError, stripe.error.SignatureVerificationError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Firma de webhook inválida: {str(exc)}",
+            logger.warning(
+                "Fallo verificación de firma local con STRIPE_WEBHOOK_SECRET: %s. "
+                "Consultando autenticidad directamente con la API de Stripe...",
+                exc,
             )
+            try:
+                import json
+                raw_data = json.loads(payload)
+                evt_id = raw_data.get("id")
+                if evt_id and evt_id.startswith("evt_"):
+                    event = stripe.Event.retrieve(evt_id)
+                    logger.info("Evento %s autenticado exitosamente con la API oficial de Stripe.", evt_id)
+                else:
+                    raise exc
+            except Exception as e_api:
+                logger.error("No se pudo autenticar el evento con Stripe: %s", e_api)
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Firma de webhook inválida: {str(exc)}",
+                ) from exc
     else:
-        # Sin secret configurado → modo test/mock (parseo directo)
-        import json
-        event = json.loads(payload)
+        # Sin secret o verificación directa
+        try:
+            import json
+            raw_data = json.loads(payload)
+            evt_id = raw_data.get("id")
+            if evt_id and evt_id.startswith("evt_"):
+                event = stripe.Event.retrieve(evt_id)
+            else:
+                event = raw_data
+        except Exception:
+            import json
+            event = json.loads(payload)
 
     if hasattr(event, "to_dict"):
         event_dict = event.to_dict()

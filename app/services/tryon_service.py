@@ -782,6 +782,139 @@ class TryOnService:
             )
 
     # -------------------------------------------------------------------------
+    # MOTOR DE IA PRINCIPAL: IDM-VTON (REPLICATE DIFFUSION MODEL)
+    # -------------------------------------------------------------------------
+
+    def _generar_con_replicate_idm_vton(
+        self,
+        user_jpeg_bytes: bytes,
+        garment_rgba: np.ndarray,
+        nombre_prenda: str,
+        categoria: str = "upper_body",
+    ) -> tuple[bytes | None, str | None, bool]:
+        """Invoca el modelo de difusión IDM-VTON alojado en Replicate (cuuupid/idm-vton)
+
+        para componer fotorealistamente la persona con la prenda.
+        Requiere la variable de entorno REPLICATE_API_TOKEN.
+        Retorna:
+            (imagen_bytes_o_none, mensaje_texto_o_none, es_fallback)
+        """
+        replicate_token = (os.getenv("REPLICATE_API_TOKEN") or "").strip()
+        if not replicate_token:
+            logger.warning("REPLICATE_API_TOKEN no configurado: IDM-VTON no disponible. Activando fallback.")
+            return None, None, True
+
+        try:
+            # Codificar la prenda con canal alfa a PNG transparente
+            ok_garment, buf_garment = cv2.imencode(".png", garment_rgba)
+            if not ok_garment:
+                return None, None, True
+
+            garment_b64 = "data:image/png;base64," + base64.b64encode(buf_garment.tobytes()).decode("utf-8")
+            person_b64 = "data:image/jpeg;base64," + base64.b64encode(user_jpeg_bytes).decode("utf-8")
+
+            # Normalizar categoría según lo que espera IDM-VTON ("upper_body", "lower_body", "dresses")
+            cat_lower = (categoria or "upper_body").lower()
+            if "vestido" in cat_lower or "dress" in cat_lower:
+                vton_category = "dresses"
+            elif any(k in cat_lower for k in ["pantalon", "short", "falda", "lower"]):
+                vton_category = "lower_body"
+            else:
+                vton_category = "upper_body"
+
+            headers = {
+                "Authorization": f"Bearer {replicate_token}",
+                "Content-Type": "application/json",
+                "Prefer": "wait=60",
+            }
+
+            payload = {
+                "version": "0513734a452173b8173e907e3a59d19a36266e55b48528559432bd21c7d7e985",
+                "input": {
+                    "human_img": person_b64,
+                    "garm_img": garment_b64,
+                    "garment_des": nombre_prenda or "Clothing garment",
+                    "category": vton_category,
+                    "crop": False,
+                    "steps": 30,
+                    "seed": 42,
+                },
+            }
+
+            logger.info("Enviando predicción de Virtual Try-On a Replicate (cuuupid/idm-vton)...")
+            with httpx.Client(timeout=120.0) as http_client:
+                resp = http_client.post(
+                    "https://api.replicate.com/v1/predictions",
+                    headers=headers,
+                    json=payload,
+                )
+                if resp.status_code not in (200, 201):
+                    logger.warning(
+                        "Replicate API devolvió HTTP %s: %s. Activando fallback.",
+                        resp.status_code,
+                        resp.text[:300],
+                    )
+                    return None, None, True
+
+                pred = resp.json()
+                poll_url = pred.get("urls", {}).get("get")
+                estado = pred.get("status")
+
+                # Si aún está procesando, hacer polling
+                max_polls = 40
+                polls = 0
+                while estado in ("starting", "processing") and poll_url and polls < max_polls:
+                    time.sleep(2.5)
+                    polls += 1
+                    poll_resp = http_client.get(poll_url, headers=headers)
+                    if poll_resp.status_code == 200:
+                        pred = poll_resp.json()
+                        estado = pred.get("status")
+                    else:
+                        break
+
+                if estado != "succeeded":
+                    logger.warning(
+                        "Predicción Replicate IDM-VTON finalizó con estado: %s. Error: %s. Activando fallback.",
+                        estado,
+                        pred.get("error"),
+                    )
+                    return None, None, True
+
+                output_url = pred.get("output")
+                if not output_url:
+                    logger.warning("Replicate IDM-VTON no retornó output URL. Activando fallback.")
+                    return None, None, True
+
+                img_resp = http_client.get(output_url, timeout=30.0)
+                if img_resp.status_code != 200:
+                    logger.warning("Error descargando imagen resultado de Replicate: %s", img_resp.status_code)
+                    return None, None, True
+
+                img_bytes = img_resp.content
+                if not img_bytes or len(img_bytes) < 128:
+                    logger.warning("Bytes devueltos por Replicate vacíos o corruptos.")
+                    return None, None, True
+
+                # Validar integridad
+                try:
+                    pil_check = Image.open(BytesIO(img_bytes))
+                    pil_check.verify()
+                except Exception as ex_ver:
+                    logger.warning("Imagen devuelta por Replicate corrupta: %s", ex_ver)
+                    return None, None, True
+
+                mensaje = (
+                    f"Composición fotorealista generada exitosamente con IDM-VTON (IA de Difusión) "
+                    f"para {nombre_prenda}."
+                )
+                return img_bytes, mensaje, False
+
+        except Exception as e:
+            logger.warning("Excepción en llamada a Replicate IDM-VTON: %s. Activando fallback.", e)
+            return None, None, True
+
+    # -------------------------------------------------------------------------
     # MOTOR DE IA ALTERNATIVO: FASHN VTON v1.5 (HUGGING FACE SPACES / ZEROGPU)
     # -------------------------------------------------------------------------
 
@@ -1023,20 +1156,29 @@ class TryOnService:
         mensaje = f"Composición fotorealista generada exitosamente para {nombre_prenda}."
 
         if peticion.usar_ia_generativa:
-            # Motor de IA configurable por entorno: gemini | fashn | cascade
-            engine = os.getenv("TRYON_ENGINE", "cascade").strip().lower()
-            if engine not in ("gemini", "fashn", "cascade"):
+            # Motor de IA configurable por entorno: replicate | huggingface / fashn | gemini | cascade
+            engine = os.getenv("TRYON_ENGINE", "replicate").strip().lower()
+            if engine in ("huggingface", "hf"):
+                engine = "fashn"
+            elif engine not in ("replicate", "gemini", "fashn", "cascade"):
                 logger.warning(
-                    "TRYON_ENGINE='%s' no reconocido. Se asume 'cascade'.", engine
+                    "TRYON_ENGINE='%s' no reconocido. Se asume 'replicate'.", engine
                 )
-                engine = "cascade"
+                engine = "replicate"
 
             ia_img_bytes: bytes | None = None
             ia_texto: str | None = None
             ia_fallback = True
             motor_efectivo: str | None = None
 
-            if engine == "fashn":
+            if engine == "replicate":
+                ia_img_bytes, ia_texto, ia_fallback = self._generar_con_replicate_idm_vton(
+                    user_jpeg_bytes=user_jpeg_bytes,
+                    garment_rgba=garment_rgba,
+                    nombre_prenda=nombre_prenda,
+                )
+                motor_efectivo = "replicate"
+            elif engine == "fashn":
                 ia_img_bytes, ia_texto, ia_fallback = self._generar_con_fashn_vton(
                     user_jpeg_bytes=user_jpeg_bytes,
                     garment_rgba=garment_rgba,
@@ -1051,14 +1193,26 @@ class TryOnService:
                 )
                 motor_efectivo = "gemini"
             else:
-                # Cascade: primero FASHN VTON, si falla se intenta Gemini y, si
-                # ambos fallan, el flujo desemboca en el motor local OpenCV.
-                ia_img_bytes, ia_texto, ia_fallback = self._generar_con_fashn_vton(
+                # Cascade: primero Replicate IDM-VTON, si falla se intenta FASHN (HF),
+                # luego Gemini y finalmente el motor local OpenCV.
+                ia_img_bytes, ia_texto, ia_fallback = self._generar_con_replicate_idm_vton(
                     user_jpeg_bytes=user_jpeg_bytes,
                     garment_rgba=garment_rgba,
                     nombre_prenda=nombre_prenda,
                 )
-                motor_efectivo = "fashn"
+                motor_efectivo = "replicate"
+
+                if ia_fallback:
+                    logger.info(
+                        "Replicate IDM-VTON no disponible (TRYON_ENGINE=cascade). Intentando FASHN VTON (Hugging Face)."
+                    )
+                    ia_img_bytes, ia_texto, ia_fallback = self._generar_con_fashn_vton(
+                        user_jpeg_bytes=user_jpeg_bytes,
+                        garment_rgba=garment_rgba,
+                        nombre_prenda=nombre_prenda,
+                    )
+                    motor_efectivo = "fashn"
+
                 if ia_fallback:
                     logger.info(
                         "FASHN VTON no disponible (TRYON_ENGINE=cascade). Intentando Gemini multimodal."
@@ -1071,7 +1225,7 @@ class TryOnService:
                     motor_efectivo = "gemini"
 
             if not ia_fallback and ia_img_bytes:
-                # La IA generó exitosamente la imagen fotorealista (FASHN o Gemini)
+                # La IA generó exitosamente la imagen fotorealista (Replicate, FASHN o Gemini)
                 # Normalizar a JPEG estándar para garantizar máxima compatibilidad con clientes y esquemas
                 try:
                     pil_check = Image.open(BytesIO(ia_img_bytes))
@@ -1082,7 +1236,10 @@ class TryOnService:
                 except Exception:
                     pass
                 imagen_resultado_b64 = "data:image/jpeg;base64," + base64.b64encode(ia_img_bytes).decode("utf-8")
-                if motor_efectivo == "fashn":
+                if motor_efectivo == "replicate":
+                    metodo = "replicate_idm_vton"
+                    metodo_usado = "replicate_idm_vton"
+                elif motor_efectivo == "fashn":
                     metodo = "fashn_vton_ai"
                     metodo_usado = "fashn_vton_ai"
                 else:

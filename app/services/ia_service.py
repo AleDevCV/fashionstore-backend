@@ -3,7 +3,7 @@
 FASHIONSTORE - SERVICIO CENTRAL DE INTELIGENCIA ARTIFICIAL (CU22, CU23, CU25)
 Sistemas de Información II - UAGRM
 -----------------------------------------------------------------------------
-Integra el modelo de lenguaje Google Gemini (gemini-2.5-flash) mediante el SDK
+Integra el modelo de lenguaje Google Gemini (gemini-3.6-flash) mediante el SDK
 oficial `google-genai` para:
   - CU22: Asistente y Recomendador Virtual de Outfits con estricta validación
           anti-alucinación contra existencias reales en PostgreSQL y fallback.
@@ -246,7 +246,7 @@ class GeminiAIService:
 
             try:
                 response = client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-3.6-flash",
                     contents=user_prompt,
                     config=types.GenerateContentConfig(
                         system_instruction=system_instruction,
@@ -351,7 +351,7 @@ class GeminiAIService:
             )
             try:
                 response = client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-3.6-flash",
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
